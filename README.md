@@ -4,6 +4,9 @@
 
 Built with **PySide6**, **openrgb-python**, and **pynput**. Faithfully replicates Mountain's official Base Camp dark slate aesthetic while providing high-performance, lag-free reactive and continuous lighting animations.
 
+<img width="1843" height="1258" alt="image" src="https://github.com/user-attachments/assets/d61164a5-709f-400a-90dd-82c3adebd6e0" />
+
+
 ---
 
 ## Architecture Overview
