@@ -1,0 +1,16 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Build outputs & heavy binaries
+build/
+dist/
+*.spec
+
+# Local user configs & logs
+config.json
+*.lock
+
+# IDE & Editor folders
+.vscode/
+.idea/

@@ -1,0 +1,4 @@
+PySide6>=6.5.0
+openrgb-python>=0.2.13
+pynput>=1.7.6
+pyinstaller>=6.0.0
