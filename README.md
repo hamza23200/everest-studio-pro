@@ -76,6 +76,16 @@ Mountain Everest 60 Project Root
 
 ## Installation & Running
 
+## ⚠️ Prerequisites & Hardware Conflict Warning
+
+> **CRITICAL:** Mountain's official **Base Camp** software must be completely shut down before launching Everest Studio Pro. 
+> 
+> Both programs communicate directly with the Everest 60 USB HID endpoint (VID `0x3282`, PID `0x0005`)[cite: 2]. Running both simultaneously causes LED packet collisions, device disconnects, and lighting lockups.
+
+1. Right-click the Mountain Base Camp tray icon → **Exit**.
+2. Disable Base Camp on boot: Open Task Manager (`Ctrl + Shift + Esc`) → **Startup apps** → right-click **Base Camp** → **Disable**.
+3. Ensure local port `6742` is open (default OpenRGB SDK port)[cite: 2].
+
 ### 1. Install Dependencies
 ```powershell
 pip install -r requirements.txt
@@ -86,7 +96,9 @@ pip install -r requirements.txt
 python main.py
 ```
 *Note: If OpenRGB is not running, Everest Studio Pro will automatically attempt to launch `OpenRGB.exe --server --headless` in the background with no console window.*
-
+### OpenRGB Daemon Placement
+* **For Source Code:** Place the portable `OpenRGB/` directory inside your project root, or install OpenRGB system-wide and add it to your system `PATH`.
+* **For Standalone `.exe`:** Keep the `OpenRGB/` folder in the same directory as `EverestStudio.exe`.
 ---
 
 ## Building Standalone `.exe`
