@@ -1,5 +1,10 @@
 # Everest Studio Pro
 
+[![Release](https://img.shields.io/github/v/release/hamza23200/everest-studio-pro?color=blue)](https://github.com/hamza23200/everest-studio-pro/releases/latest)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue?logo=windows)](https://github.com/hamza23200/everest-studio-pro)
+[![License](https://img.shields.io/badge/License-GPLv3-green)](LICENSE)
+
 **Production-Grade Base Camp Replacement & Lighting Suite for Mountain Everest 60**
 
 Built with **PySide6**, **openrgb-python**, and **pynput**. Faithfully replicates Mountain's official Base Camp dark slate aesthetic while providing high-performance, lag-free reactive and continuous lighting animations.
