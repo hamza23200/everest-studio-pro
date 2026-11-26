@@ -47,7 +47,15 @@ from engine.matrix import (
     build_edge_coords,
     build_key_lookups,
 )
-from engine.effects import EffectRenderer, scale_brightness
+from engine.effects import (
+    EffectRenderer,
+    scale_brightness,
+    calculate_crosshair_intensity,
+    calculate_explosion_color,
+    heatmap_color,
+)
+from engine.audio_worker import AudioCaptureWorker
+from engine.screen_worker import ScreenCaptureWorker
 
 OPENRGB_EXE = "OpenRGB.exe"
 EXPECTED_LED_COUNT = 147
@@ -387,10 +395,47 @@ class LightingEngineThread(QThread):
         self.ripple_width = 2.4
         self.ripple_decay = 0.65
 
+        # v3.0 Phase 1 Effect Tuning Parameters
+        self.sweep_speed = 25.0
+        self.sweep_trail = 4.0
+        self.aurora_scale = 1.0
+        self.breath_min_floor = 10.0
+        self.star_density = 5.0
+        self.storm_intensity = 5.0
+        self.glitch_freq = 5.0
+        self.dna_twist = 5.0
+        self.dna_outward = True
+        self.meteor_count = 6
+        self.crosshair_speed = 50.0
+        self.crosshair_decay = 0.45
+        self.flash_decay = 0.40
+        self.explosion_speed = 28.0
+        self.explosion_decay = 0.65
+        self.heatmap_mode = "live"
+        self.heatmap_cooldown = 5.0
+
+        # v3.0 Phase 2 System Sync Parameters & Decoupled Workers
+        self.audio_style = "bars"         # 'bars' or 'bass_pulse'
+        self.audio_gain = 1.5             # 0.5x to 4.0x
+        self.audio_smoothing = 0.50       # 0.00 to 0.90
+        self.screen_mode = "grid"         # 'grid' or 'edges'
+        self.screen_smoothing = 0.55      # 0.00 to 0.90
+        self.screen_saturation = 1.50     # 1.0x to 2.5x
+        self.screen_monitor = 1
+
+        self.audio_worker = AudioCaptureWorker(num_bands=20)
+        self.screen_worker = ScreenCaptureWorker(monitor_index=1)
+
         # Reactive State Channels
         self.active_rows: Dict[int, Tuple[float, ...]] = {}
         self.active_ripples: List[Dict[str, float]] = []
         self.active_punches: Dict[int, float] = {}
+        self.active_crosshairs: List[Dict[str, float]] = []
+        self.active_explosions: List[Dict[str, Any]] = []
+        self.flash_energy: float = 0.0
+        self.key_heat: Dict[int, float] = {}
+        self._last_render_time: float = time.time()
+        self._last_key_press_times: Dict[int, float] = {}
 
         # Low-latency background keyboard listener
         self.listener: Optional[keyboard.Listener] = None
@@ -411,6 +456,7 @@ class LightingEngineThread(QThread):
         if self._dock_position != val_clean:
             self._dock_position = val_clean
             self._update_geometry()
+            self._sync_system_workers()
             self._static_dirty = True
 
     @property
@@ -442,6 +488,50 @@ class LightingEngineThread(QThread):
         self._static_dirty = True
 
     @property
+    def edge_brightness(self) -> int:
+        return self._underglow_brightness
+
+    @edge_brightness.setter
+    def edge_brightness(self, val: int):
+        self.underglow_brightness = val
+
+    def reset_heatmap(self):
+        """Clears per-key typing heatmap accumulation."""
+        with self.lock:
+            self.key_heat.clear()
+            self._static_dirty = True
+
+    def _get_board_bounds(self) -> Tuple[float, float, float, float]:
+        """Returns (x_min, x_max, cx, cy) dynamically for the active dock layout."""
+        if self._dock_position == "left":
+            return (-4.5, 15.0, 5.25, 2.5)
+        if self._dock_position == "detached":
+            return (0.0, 15.0, 7.5, 2.5)
+        return (0.0, 19.5, 9.75, 2.5)
+
+    def _sync_system_workers(self):
+        """Starts/stops WASAPI audio and mss screen threads exclusively when their mode is active."""
+        bands = 15 if self._dock_position == "detached" else 20
+        self.audio_worker.set_num_bands(bands)
+        self.audio_worker.sensitivity = float(self.audio_gain)
+        self.audio_worker.smoothing = float(self.audio_smoothing)
+
+        self.screen_worker.capture_mode = self.screen_mode
+        self.screen_worker.smoothing = float(self.screen_smoothing)
+        self.screen_worker.saturation_boost = float(self.screen_saturation)
+        self.screen_worker.monitor_index = max(1, int(self.screen_monitor))
+
+        if self._effect_name == "audio_equalizer":
+            self.screen_worker.stop()
+            self.audio_worker.start()
+        elif self._effect_name == "screen_ambilight":
+            self.audio_worker.stop()
+            self.screen_worker.start()
+        else:
+            self.audio_worker.stop()
+            self.screen_worker.stop()
+
+    @property
     def effect_name(self) -> str:
         return self._effect_name
 
@@ -449,6 +539,7 @@ class LightingEngineThread(QThread):
     def effect_name(self, val: str):
         if self._effect_name != val:
             self._effect_name = val
+            self._sync_system_workers()
             self._static_dirty = True
 
     @property
@@ -918,6 +1009,18 @@ class LightingEngineThread(QThread):
             if len(self.active_ripples) > 4:
                 self.active_ripples.pop(0)
 
+            self.active_crosshairs.append({"x": x, "y": y, "t0": now})
+            if len(self.active_crosshairs) > 6:
+                self.active_crosshairs.pop(0)
+
+            seed = int((now * 100000) % 99991) ^ int(led_idx)
+            self.active_explosions.append({"x": x, "y": y, "t0": now, "seed": seed})
+            if len(self.active_explosions) > 5:
+                self.active_explosions.pop(0)
+
+            self.flash_energy = min(1.0, self.flash_energy * 0.35 + 0.80)
+            self.key_heat[led_idx] = min(1.0, self.key_heat.get(led_idx, 0.0) + 0.28)
+
     def _is_reactive_trigger(self, key) -> bool:
         """
         Determines whether an incoming key event is a genuine keystroke that should
@@ -972,14 +1075,18 @@ class LightingEngineThread(QThread):
         return False
 
     def _on_press(self, key):
-        """Zero-latency keystroke callback with instant try/except error suppression."""
+        """Zero-latency keystroke callback with 80ms debounce and instant error suppression."""
         try:
-            self.last_key_time = time.time()
+            now = time.time()
+            self.last_key_time = now
             if not self._is_reactive_trigger(key):
                 return
             idx = self._resolve_key(key)
             if idx is None or idx in self.edge_indices or idx not in self.key_coords:
                 return
+            if (now - self._last_key_press_times.get(idx, 0.0)) < 0.08:
+                return
+            self._last_key_press_times[idx] = now
             self.trigger_switch(idx)
         except Exception:
             pass
@@ -1251,6 +1358,9 @@ class LightingEngineThread(QThread):
         assert 27 in self.switch_indices, "Hardware Index 27 missing from switch_indices!"
         assert self.matrix.key_to_index.get('3') == 27, "Key 3 is not mapped to index 27!"
 
+        frame_dt = max(0.001, min(0.15, now - self._last_render_time))
+        self._last_render_time = now
+
         with self.lock:
             max_laser_life = (30.0 / max(3.0, self.laser_speed)) + self.laser_decay
             self.active_rows = {
@@ -1263,10 +1373,67 @@ class LightingEngineThread(QThread):
                 w for w in self.active_ripples if (now - w["t0"]) < self.ripple_decay
             ]
 
+            max_ch_life = (25.0 / max(5.0, self.crosshair_speed)) + self.crosshair_decay
+            self.active_crosshairs = [
+                c for c in self.active_crosshairs if (now - c["t0"]) < max_ch_life
+            ]
+            self.active_explosions = [
+                ex for ex in self.active_explosions if (now - ex["t0"]) < self.explosion_decay
+            ]
+
+            self.flash_energy *= math.exp(-frame_dt / max(0.05, self.flash_decay * 0.45))
+            if self.flash_energy < 0.005:
+                self.flash_energy = 0.0
+
+            if self.heatmap_mode == "live" and self.key_heat:
+                cool_step = frame_dt * (0.015 + self.heatmap_cooldown * 0.025)
+                self.key_heat = {
+                    k: v - cool_step for k, v in self.key_heat.items() if (v - cool_step) > 0.001
+                }
+
             rows_snap = dict(self.active_rows)
             punches_snap = dict(self.active_punches)
             ripples_snap = list(self.active_ripples)
             custom_snap = dict(self.custom_key_colors)
+            state_snap = {
+                "bounds": self._get_board_bounds(),
+                "crosshairs": list(self.active_crosshairs),
+                "explosions": list(self.active_explosions),
+                "flash": self.flash_energy,
+                "heat": dict(self.key_heat),
+            }
+
+        if self.effect_name == "audio_equalizer":
+            self.audio_worker.set_num_bands(15 if self._dock_position == "detached" else 20)
+            self.audio_worker.sensitivity = float(self.audio_gain)
+            self.audio_worker.smoothing = float(self.audio_smoothing)
+            bands, bass, _ = self.audio_worker.get_snapshot()
+            state_snap["audio_bands"] = bands
+            state_snap["audio_bass"] = bass
+        elif self.effect_name == "screen_ambilight":
+            self.screen_worker.capture_mode = self.screen_mode
+            self.screen_worker.smoothing = float(self.screen_smoothing)
+            self.screen_worker.saturation_boost = float(self.screen_saturation)
+            self.screen_worker.monitor_index = max(1, int(self.screen_monitor))
+            grid, edges, _ = self.screen_worker.get_snapshot()
+            state_snap["screen_grid"] = grid
+            state_snap["screen_edges"] = edges
+
+        self.renderer.step_frame(
+            self.effect_name,
+            now,
+            state_snap["bounds"],
+            {
+                "star_density": self.star_density,
+                "storm_intensity": self.storm_intensity,
+                "glitch_freq": self.glitch_freq,
+                "meteor_count": self.meteor_count,
+                "speed": self.speed,
+                "mode_type": self.mode_type,
+                "color_a": self.color_a,
+                "color_b": self.color_b,
+            },
+        )
 
         frame_colors: List[Tuple[int, int, int]] = [(0, 0, 0)] * 81
         kb_colors = self.kb.colors if (self.kb and hasattr(self.kb, "colors")) else None
@@ -1282,7 +1449,7 @@ class LightingEngineThread(QThread):
             kx, ky = self.key_coords.get(led_idx, (k["x"] + k["w"] / 2.0, k["y"]))
             try:
                 c = self._compute_key_color(
-                    led_idx, kx, ky, now, rows_snap, punches_snap, ripples_snap, custom_snap
+                    led_idx, kx, ky, now, rows_snap, punches_snap, ripples_snap, custom_snap, state_snap
                 )
             except Exception as e:
                 print(f"[ENGINE CRASH PREVENTED] {e}")
@@ -1300,7 +1467,7 @@ class LightingEngineThread(QThread):
                 kx, ky = self.key_coords.get(led_idx, (k.get("rel_x", 0.0) + 15.5, k["y"]))
                 try:
                     c = self._compute_key_color(
-                        led_idx, kx, ky, now, rows_snap, punches_snap, ripples_snap, custom_snap
+                        led_idx, kx, ky, now, rows_snap, punches_snap, ripples_snap, custom_snap, state_snap
                     )
                 except Exception as e:
                     print(f"[ENGINE CRASH PREVENTED] {e}")
@@ -1326,7 +1493,9 @@ class LightingEngineThread(QThread):
         last_edge_c = RGBColor(0, 0, 0)
         for idx in self.edge_indices:
             try:
-                edge_c = self._compute_edge_color(idx, now, rows_snap, punches_snap, ripples_snap)
+                edge_c = self._compute_edge_color(
+                    idx, now, rows_snap, punches_snap, ripples_snap, state_snap
+                )
             except Exception as e:
                 print(f"[ENGINE CRASH PREVENTED] {e}")
                 traceback.print_exc()
@@ -1358,6 +1527,70 @@ class LightingEngineThread(QThread):
 
     _render_loop = _render_loop_step
 
+    def _compute_v3_ambient_color(
+        self, eff: str, x: float, y: float, now: float,
+        bounds: Tuple[float, float, float, float], factor: float,
+    ) -> Optional[RGBColor]:
+        """Evaluates v3.0 Phase 1 ambient & dynamic FX effects for switches or diffusers."""
+        x_min, x_max, cx, cy = bounds
+        if eff == "row_sweep":
+            return self.renderer.render_row_sweep(
+                x, y, now, x_min, x_max, self.sweep_speed, self.sweep_trail,
+                self.mode_type, self.color_a, self.color_b, factor,
+            )
+        if eff == "waterfall":
+            return self.renderer.render_waterfall(
+                x, y, now, self.speed, self.mode_type, self.color_a, self.color_b, factor,
+            )
+        if eff == "aurora":
+            return self.renderer.render_aurora(x, y, now, self.speed, self.aurora_scale, factor)
+        if eff == "gradient_breathing":
+            return self.renderer.render_gradient_breathing(
+                x, y, now, x_min, x_max, self.speed, self.breath_min_floor,
+                self.color_a, self.color_b, factor,
+            )
+        if eff == "cosmic_drift":
+            return self.renderer.render_cosmic_drift(x, y, now, self.speed, factor)
+        if eff == "thunderstorm":
+            return self.renderer.render_thunderstorm(x, y, now, factor)
+        if eff == "system_malfunction":
+            return self.renderer.render_system_malfunction(
+                x, y, now, x_min, x_max, self.color_a, self.color_b, factor,
+            )
+        if eff == "dna_spiral":
+            x_half = max(3.5, (x_max - x_min) * 0.5)
+            return self.renderer.render_dna_spiral(
+                x, y, now, cx, cy, x_half, self.speed, self.dna_twist, self.dna_outward,
+                self.color_a, self.color_b, factor,
+            )
+        if eff == "meteor_shower":
+            return self.renderer.render_meteor_shower(x, y, self.mode_type, self.color_b, factor)
+        return None
+
+    def _compute_v3_reactive_color(
+        self, eff: str, idx: int, x: float, y: float, now: float,
+        base_factor: float, react_factor: float, state_snap: Dict[str, Any],
+    ) -> Optional[RGBColor]:
+        """Evaluates v3.0 Phase 1 reactive switch effects."""
+        idle_base = RGBColor(0, 0, 0) if self.mode_type == "single" else scale_brightness(self.color_b, base_factor)
+        if eff == "crosshair":
+            intensity = calculate_crosshair_intensity(
+                x, y, now, state_snap.get("crosshairs", []), self.crosshair_speed, self.crosshair_decay,
+            )
+            return blend_reactive(idle_base, self.color_a, react_factor, intensity)
+        if eff == "full_board_flash":
+            return blend_reactive(idle_base, self.color_a, react_factor, state_snap.get("flash", 0.0))
+        if eff == "explosion_burst":
+            col, _ = calculate_explosion_color(
+                x, y, now, state_snap.get("explosions", []), self.explosion_speed,
+                self.explosion_decay, idle_base, self.color_a, react_factor,
+            )
+            return col
+        if eff == "typing_heatmap":
+            heat = state_snap.get("heat", {}).get(idx, 0.0)
+            return heatmap_color(heat, base_factor, react_factor)
+        return None
+
     def _compute_key_color(
         self,
         idx: int,
@@ -1368,11 +1601,35 @@ class LightingEngineThread(QThread):
         punches_snap: Dict[int, float],
         ripples_snap: List[Dict[str, float]],
         custom_snap: Dict[int, RGBColor],
+        state_snap: Optional[Dict[str, Any]] = None,
     ) -> RGBColor:
         """Evaluates active effect for a switch with independent dual brightness blending."""
         eff = self.effect_name
         base_factor = max(0.0, min(1.0, self.base_brightness / 100.0))
         react_factor = max(0.0, min(1.0, self.reactive_brightness / 100.0))
+        snap = state_snap if state_snap is not None else {}
+        bounds = snap.get("bounds") or self._get_board_bounds()
+
+        v3_ambient = self._compute_v3_ambient_color(eff, x, y, now, bounds, base_factor)
+        if v3_ambient is not None:
+            return v3_ambient
+
+        v3_reactive = self._compute_v3_reactive_color(eff, idx, x, y, now, base_factor, react_factor, snap)
+        if v3_reactive is not None:
+            return v3_reactive
+
+        if eff == "audio_equalizer":
+            return self.renderer.render_audio_equalizer(
+                x, y, bounds[0], bounds[1],
+                snap.get("audio_bands", []), snap.get("audio_bass", 0.0),
+                self.audio_style, self.mode_type, self.color_a, self.color_b,
+                base_factor, react_factor,
+            )
+
+        if eff == "screen_ambilight":
+            return self.renderer.render_screen_ambilight(
+                x, y, bounds[0], bounds[1], snap.get("screen_grid"), base_factor,
+            )
 
         if eff == "static":
             return scale_brightness(self.color_a, base_factor)
@@ -1435,6 +1692,7 @@ class LightingEngineThread(QThread):
         rows_snap: Dict[int, Tuple[float, ...]],
         punches_snap: Dict[int, float],
         ripples_snap: List[Dict[str, float]],
+        state_snap: Optional[Dict[str, Any]] = None,
     ) -> RGBColor:
         """
         Anti-Burst Underglow Sync:
@@ -1455,8 +1713,10 @@ class LightingEngineThread(QThread):
         ex, ey = self.edge_coords.get(idx, (7.5, 2.0))
         base_factor = max(0.0, min(1.0, self.base_brightness / 100.0))
         react_factor = max(0.0, min(1.0, self.reactive_brightness / 100.0))
+        snap = state_snap if state_snap is not None else {}
+        bounds = snap.get("bounds") or self._get_board_bounds()
 
-        if eff in ("ripple", "laser", "punch"):
+        if eff in ("ripple", "laser", "punch", "crosshair", "full_board_flash", "explosion_burst"):
             try:
                 if eff == "ripple":
                     wave_intensity = calculate_ripple_intensity(
@@ -1466,9 +1726,20 @@ class LightingEngineThread(QThread):
                     wave_intensity = calculate_laser_intensity(
                         ex, ey, now, rows_snap, self.laser_speed, self.laser_decay, self.pulse_width
                     )
-                else:
+                elif eff == "punch":
                     wave_intensity = calculate_punch_edge_intensity(
                         ex, ey, now, punches_snap, self.punch_decay, self.key_coords
+                    )
+                elif eff == "crosshair":
+                    wave_intensity = calculate_crosshair_intensity(
+                        ex, ey, now, snap.get("crosshairs", []), self.crosshair_speed, self.crosshair_decay
+                    )
+                elif eff == "full_board_flash":
+                    wave_intensity = snap.get("flash", 0.0)
+                else:
+                    _, wave_intensity = calculate_explosion_color(
+                        ex, ey, now, snap.get("explosions", []), self.explosion_speed,
+                        self.explosion_decay, RGBColor(0, 0, 0), self.color_a, 1.0,
                     )
             except Exception as e:
                 print(f"[ENGINE CRASH PREVENTED] {e}")
@@ -1481,6 +1752,29 @@ class LightingEngineThread(QThread):
             )
             dampened_intensity = wave_intensity * 0.4 * edge_ug_factor * react_factor
             return blend_reactive(ambient_base, self.color_a, 1.0, dampened_intensity)
+
+        if eff == "thunderstorm":
+            return self.renderer.get_thunderclap_edge_color(ex, ey, now, edge_ug_factor * base_factor)
+
+        if eff == "typing_heatmap":
+            heat_vals = list(snap.get("heat", {}).values())
+            avg_heat = (sum(heat_vals) / len(heat_vals)) if heat_vals else 0.0
+            return heatmap_color(avg_heat, edge_ug_factor * base_factor, edge_ug_factor * react_factor)
+
+        if eff == "audio_equalizer":
+            ambient_base = scale_brightness(self.color_b, edge_ug_factor * base_factor)
+            bass = snap.get("audio_bass", 0.0)
+            dampened = bass * 0.4 * edge_ug_factor * react_factor
+            return blend_reactive(ambient_base, self.color_a, 1.0, dampened)
+
+        if eff == "screen_ambilight":
+            return self.renderer.render_screen_edge(
+                ex, ey, bounds[0], bounds[1], snap.get("screen_edges"), edge_ug_factor * base_factor,
+            )
+
+        v3_edge = self._compute_v3_ambient_color(eff, ex, ey, now, bounds, edge_ug_factor * base_factor)
+        if v3_edge is not None:
+            return v3_edge
 
         if eff in ("static", "custom"):
             return scale_brightness(self.color_a, edge_ug_factor * base_factor)
@@ -1511,8 +1805,10 @@ class LightingEngineThread(QThread):
         return scale_brightness(self.base_color, edge_ug_factor * base_factor)
 
     def stop(self):
-        """Cleans up threads, hooks, and resets lighting on shutdown."""
+        """Cleans up threads, hooks, system sync workers, and resets lighting on shutdown."""
         self.running = False
+        self.audio_worker.stop()
+        self.screen_worker.stop()
         if self.listener:
             try:
                 self.listener.stop()

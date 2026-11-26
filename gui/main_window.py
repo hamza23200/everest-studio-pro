@@ -11,8 +11,8 @@ import sys
 import json
 from typing import Optional, Dict
 import threading
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QAction
+from PySide6.QtCore import Qt, Signal, QSize, QTimer
+from PySide6.QtGui import QColor, QAction, QFont, QBrush
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -28,11 +28,14 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QSystemTrayIcon,
     QMenu,
-    QApplication
+    QApplication,
+    QScrollArea,
+    QComboBox,
 )
 from openrgb.utils import RGBColor
 
 from engine.lighting_engine import LightingEngineThread
+from engine.screen_worker import ScreenCaptureWorker
 from gui.keyboard_canvas import EverestKeyboardCanvas
 from gui.color_picker import BaseCampColorPicker
 
@@ -50,6 +53,46 @@ DIR_LEFT = "left"
 DIR_DETACHED = "detached"
 BRUSH_PAINT = "paint"
 BRUSH_ERASE = "erase"
+
+EFFECT_CATEGORIES = [
+    ("AMBIENT", [
+        ("Color Wave", "wave"),
+        ("Waterfall", "waterfall"),
+        ("Aurora", "aurora"),
+        ("Breathing & Pulse", "breathing"),
+        ("Gradient Breathing", "gradient_breathing"),
+        ("Cosmic Drift", "cosmic_drift"),
+        ("Thunderstorm", "thunderstorm"),
+        ("System Malfunction", "system_malfunction"),
+    ]),
+    ("DYNAMIC FX", [
+        ("Tornado", "tornado"),
+        ("DNA Spiral", "dna_spiral"),
+        ("Row Sweep", "row_sweep"),
+        ("Falling Matrix", "matrix"),
+        ("Meteor Shower", "meteor_shower"),
+    ]),
+    ("REACTIVE", [
+        ("Snappy Laser", "laser"),
+        ("Expanding Ripple", "ripple"),
+        ("Explosion Burst", "explosion_burst"),
+        ("Crosshair", "crosshair"),
+        ("Full-Board Flash", "full_board_flash"),
+        ("Single-Key Punch", "punch"),
+        ("Typing Heatmap", "typing_heatmap"),
+    ]),
+    ("SYSTEM SYNC", [
+        ("Audio Equalizer", "audio_equalizer"),
+        ("Screen Ambilight", "screen_ambilight"),
+    ]),
+    ("STATIC & CUSTOM", [
+        ("Static Color", "static"),
+        ("Custom Per-Key", "custom"),
+        ("Lighting Off", "off"),
+    ]),
+]
+
+ALL_EFFECT_KEYS = [key for _, items in EFFECT_CATEGORIES for _, key in items]
 
 
 def rgb_to_hex(c: RGBColor) -> str:
@@ -137,6 +180,11 @@ class EverestStudioWindow(QMainWindow):
         self._setup_tray_icon()
         self._wire_engine_signals()
 
+        self._sync_status_timer = QTimer(self)
+        self._sync_status_timer.setInterval(500)
+        self._sync_status_timer.timeout.connect(self._refresh_sync_status_hint)
+        self._sync_status_timer.start()
+
         # Load persisted settings from config.json before starting lighting thread
         self.load_settings()
 
@@ -171,10 +219,10 @@ class EverestStudioWindow(QMainWindow):
                 outline: none;
             }
             QListWidget::item {
-                height: 38px;
+                height: 30px;
                 padding-left: 14px;
                 border-radius: 4px;
-                margin: 2px 8px;
+                margin: 1px 6px;
                 color: #8A8F9D;
                 font-size: 12px;
                 font-weight: 500;
@@ -188,6 +236,30 @@ class EverestStudioWindow(QMainWindow):
                 color: #0078D7;
                 font-weight: bold;
                 border-left: 3px solid #0078D7;
+            }
+            QScrollArea {
+                background-color: transparent;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: #14161B;
+                width: 6px;
+                margin: 2px 0;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: #20232B;
+                min-height: 24px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #0078D7;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
             }
             .CardPanel {
                 background-color: #20232B;
@@ -252,6 +324,25 @@ class EverestStudioWindow(QMainWindow):
                 background-color: #0078D7;
                 border-color: #0078D7;
                 color: #FFFFFF;
+            }
+            QComboBox {
+                background-color: #262A35;
+                color: #FFFFFF;
+                border: 1px solid #333947;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: bold;
+                min-width: 170px;
+            }
+            QComboBox:hover {
+                border-color: #0078D7;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #20232B;
+                color: #FFFFFF;
+                border: 1px solid #333947;
+                selection-background-color: #0078D7;
             }
         """)
 
@@ -337,42 +428,64 @@ class EverestStudioWindow(QMainWindow):
         return rail
 
     # --------------------------------------------------------------------------
-    # 2. EFFECTS COLUMN
+    # 2. EFFECTS COLUMN (Categorized Scrollable Sidebar)
     # --------------------------------------------------------------------------
     def _build_effects_column(self) -> QWidget:
         col = QWidget()
         col.setObjectName("effects_column")
-        col.setFixedWidth(195)
+        col.setFixedWidth(212)
         layout = QVBoxLayout(col)
-        layout.setContentsMargins(8, 20, 8, 16)
-        layout.setSpacing(8)
+        layout.setContentsMargins(6, 18, 6, 12)
+        layout.setSpacing(6)
 
         header = QLabel("LIGHTING EFFECTS")
-        header.setStyleSheet("color: #8A8F9D; font-size: 11px; font-weight: bold; padding-left: 14px; letter-spacing: 1px;")
+        header.setStyleSheet("color: #8A8F9D; font-size: 11px; font-weight: bold; padding-left: 12px; letter-spacing: 1px;")
         layout.addWidget(header)
 
-        self.effects_list = QListWidget()
-        effects = [
-            ("Color Wave", "wave"),
-            ("Tornado", "tornado"),
-            ("Breathing & Pulse", "breathing"),
-            ("Snappy Laser", "laser"),
-            ("Falling Matrix", "matrix"),
-            ("Expanding Ripple", "ripple"),
-            ("Single-Key Punch", "punch"),
-            ("Static Color", "static"),
-            ("Custom Per-Key", "custom"),
-            ("Lighting Off", "off")
-        ]
-        for name, key in effects:
-            item = QListWidgetItem(f"  {name}")
-            item.setData(Qt.ItemDataRole.UserRole, key)
-            self.effects_list.addItem(item)
+        self.effects_scroll_area = QScrollArea()
+        self.effects_scroll_area.setWidgetResizable(True)
+        self.effects_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.effects_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.effects_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        self.effects_list.setCurrentRow(0)
+        self.effects_list = QListWidget()
+        self.effects_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.effects_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        header_font = QFont("Segoe UI", 8)
+        header_font.setBold(True)
+        header_font.setPixelSize(10)
+        header_fg = QBrush(QColor("#7A8294"))
+
+        total_height = 8
+        first_effect_row = None
+        for cat_idx, (cat_title, entries) in enumerate(EFFECT_CATEGORIES):
+            hdr_item = QListWidgetItem(f"  {cat_title}")
+            hdr_item.setFlags(Qt.ItemFlag.NoItemFlags)
+            hdr_item.setData(Qt.ItemDataRole.UserRole, None)
+            hdr_item.setFont(header_font)
+            hdr_item.setForeground(header_fg)
+            hdr_height = 22 if cat_idx == 0 else 26
+            hdr_item.setSizeHint(QSize(180, hdr_height))
+            self.effects_list.addItem(hdr_item)
+            total_height += hdr_height
+
+            for name, key in entries:
+                item = QListWidgetItem(f"  {name}")
+                item.setData(Qt.ItemDataRole.UserRole, key)
+                item.setSizeHint(QSize(180, 32))
+                self.effects_list.addItem(item)
+                if first_effect_row is None:
+                    first_effect_row = self.effects_list.count() - 1
+                total_height += 32
+
+        self.effects_list.setFixedHeight(total_height + 10)
+        if first_effect_row is not None:
+            self.effects_list.setCurrentRow(first_effect_row)
         self.effects_list.currentItemChanged.connect(self._on_effect_changed)
 
-        layout.addWidget(self.effects_list)
+        self.effects_scroll_area.setWidget(self.effects_list)
+        layout.addWidget(self.effects_scroll_area)
         return col
 
     # --------------------------------------------------------------------------
@@ -861,6 +974,134 @@ class EverestStudioWindow(QMainWindow):
         self.custom_controls_widget.hide()
         self.custom_actions_frame = self.custom_controls_widget
 
+        # I. DNA Spiral Direction Pad
+        self.dna_dir_frame = QWidget()
+        dna_layout = QHBoxLayout(self.dna_dir_frame)
+        dna_layout.setContentsMargins(0, 0, 0, 0)
+        dna_lbl = QLabel("SPIRAL DIRECTION:")
+        dna_lbl.setStyleSheet("color: #8A8F9D; font-size: 11px; font-weight: bold;")
+        dna_layout.addWidget(dna_lbl)
+
+        self.dna_outward_btn = QPushButton("Outward")
+        self.dna_outward_btn.setProperty(PROP_CLASS, CLASS_TOOL_BUTTON)
+        self.dna_outward_btn.setCheckable(True)
+        self.dna_outward_btn.setChecked(True)
+        self.dna_outward_btn.clicked.connect(lambda: self._set_dna_direction(True))
+
+        self.dna_inward_btn = QPushButton("Inward")
+        self.dna_inward_btn.setProperty(PROP_CLASS, CLASS_TOOL_BUTTON)
+        self.dna_inward_btn.setCheckable(True)
+        self.dna_inward_btn.clicked.connect(lambda: self._set_dna_direction(False))
+
+        dna_layout.addWidget(self.dna_outward_btn)
+        dna_layout.addWidget(self.dna_inward_btn)
+        dna_layout.addStretch()
+        left_layout.addWidget(self.dna_dir_frame)
+        self.dna_dir_frame.hide()
+
+        # J. Typing Heatmap Controls (Live Decay vs Session Persistent + Reset)
+        self.heatmap_controls_widget = QWidget()
+        hm_layout = QHBoxLayout(self.heatmap_controls_widget)
+        hm_layout.setContentsMargins(0, 0, 0, 0)
+        hm_layout.setSpacing(8)
+        hm_lbl = QLabel("HEATMAP MODE:")
+        hm_lbl.setStyleSheet("color: #8A8F9D; font-size: 11px; font-weight: bold;")
+        hm_layout.addWidget(hm_lbl)
+
+        self.heatmap_live_btn = QPushButton("Live Decay")
+        self.heatmap_live_btn.setProperty(PROP_CLASS, CLASS_TOOL_BUTTON)
+        self.heatmap_live_btn.setCheckable(True)
+        self.heatmap_live_btn.setChecked(True)
+        self.heatmap_live_btn.clicked.connect(lambda: self._set_heatmap_mode("live"))
+
+        self.heatmap_persist_btn = QPushButton("Session Persistent")
+        self.heatmap_persist_btn.setProperty(PROP_CLASS, CLASS_TOOL_BUTTON)
+        self.heatmap_persist_btn.setCheckable(True)
+        self.heatmap_persist_btn.clicked.connect(lambda: self._set_heatmap_mode("persistent"))
+
+        self.heatmap_reset_btn = QPushButton("Reset Heatmap")
+        self.heatmap_reset_btn.setProperty(PROP_CLASS, CLASS_TOOL_BUTTON)
+        self.heatmap_reset_btn.clicked.connect(self._on_reset_heatmap_clicked)
+
+        hm_layout.addWidget(self.heatmap_live_btn)
+        hm_layout.addWidget(self.heatmap_persist_btn)
+        hm_layout.addWidget(self.heatmap_reset_btn)
+        hm_layout.addStretch()
+        left_layout.addWidget(self.heatmap_controls_widget)
+        self.heatmap_controls_widget.hide()
+
+        # K. Audio Equalizer Controls (Style: Spectrum Bars vs Bass Pulse)
+        self.audio_controls_widget = QWidget()
+        aud_layout = QHBoxLayout(self.audio_controls_widget)
+        aud_layout.setContentsMargins(0, 0, 0, 0)
+        aud_layout.setSpacing(8)
+        aud_lbl = QLabel("AUDIO STYLE:")
+        aud_lbl.setStyleSheet("color: #8A8F9D; font-size: 11px; font-weight: bold;")
+        aud_layout.addWidget(aud_lbl)
+
+        self.audio_bars_btn = QPushButton("Spectrum Bars")
+        self.audio_bars_btn.setProperty(PROP_CLASS, CLASS_TOOL_BUTTON)
+        self.audio_bars_btn.setCheckable(True)
+        self.audio_bars_btn.setChecked(True)
+        self.audio_bars_btn.clicked.connect(lambda: self._set_audio_style("bars"))
+
+        self.audio_bass_btn = QPushButton("Bass Pulse")
+        self.audio_bass_btn.setProperty(PROP_CLASS, CLASS_TOOL_BUTTON)
+        self.audio_bass_btn.setCheckable(True)
+        self.audio_bass_btn.clicked.connect(lambda: self._set_audio_style("bass_pulse"))
+
+        aud_layout.addWidget(self.audio_bars_btn)
+        aud_layout.addWidget(self.audio_bass_btn)
+        aud_layout.addStretch()
+        left_layout.addWidget(self.audio_controls_widget)
+        self.audio_controls_widget.hide()
+
+        # L. Screen Ambilight Controls (Capture Mode & Monitor Selector)
+        self.screen_controls_widget = QWidget()
+        scr_layout = QHBoxLayout(self.screen_controls_widget)
+        scr_layout.setContentsMargins(0, 0, 0, 0)
+        scr_layout.setSpacing(8)
+        scr_lbl = QLabel("CAPTURE MODE:")
+        scr_lbl.setStyleSheet("color: #8A8F9D; font-size: 11px; font-weight: bold;")
+        scr_layout.addWidget(scr_lbl)
+
+        self.screen_grid_btn = QPushButton("Full Screen Grid")
+        self.screen_grid_btn.setProperty(PROP_CLASS, CLASS_TOOL_BUTTON)
+        self.screen_grid_btn.setCheckable(True)
+        self.screen_grid_btn.setChecked(True)
+        self.screen_grid_btn.clicked.connect(lambda: self._set_screen_mode("grid"))
+
+        self.screen_edges_btn = QPushButton("Monitor Edges Only")
+        self.screen_edges_btn.setProperty(PROP_CLASS, CLASS_TOOL_BUTTON)
+        self.screen_edges_btn.setCheckable(True)
+        self.screen_edges_btn.clicked.connect(lambda: self._set_screen_mode("edges"))
+
+        mon_lbl = QLabel("MONITOR:")
+        mon_lbl.setStyleSheet("color: #8A8F9D; font-size: 11px; font-weight: bold;")
+
+        self.monitor_combo = QComboBox()
+        for mon_idx, mon_label in ScreenCaptureWorker.list_monitors():
+            self.monitor_combo.addItem(mon_label, mon_idx)
+        self.monitor_combo.currentIndexChanged.connect(self._on_monitor_changed)
+
+        scr_layout.addWidget(self.screen_grid_btn)
+        scr_layout.addWidget(self.screen_edges_btn)
+        scr_layout.addSpacing(8)
+        scr_layout.addWidget(mon_lbl)
+        scr_layout.addWidget(self.monitor_combo)
+        scr_layout.addStretch()
+        left_layout.addWidget(self.screen_controls_widget)
+        self.screen_controls_widget.hide()
+
+        # M. Live System Sync Device/Capture Status Hint
+        self.sync_status_lbl = QLabel("")
+        self.sync_status_lbl.setStyleSheet(
+            "color: #9CA3AF; background-color: #181A1F; border: 1px solid #2B2F3A; "
+            "border-radius: 6px; padding: 6px 10px; font-size: 11px;"
+        )
+        left_layout.addWidget(self.sync_status_lbl)
+        self.sync_status_lbl.hide()
+
         left_layout.addStretch()
         deck_layout.addWidget(left_card, stretch=3)
 
@@ -949,6 +1190,8 @@ class EverestStudioWindow(QMainWindow):
                 prev_entry["active_slot"] = self.active_profile_slot
 
         new_eff = current.data(Qt.ItemDataRole.UserRole)
+        if not new_eff:
+            return
         self.engine.effect_name = new_eff
 
         eff_entry = self._get_or_create_effect_profile(new_eff)
@@ -970,6 +1213,11 @@ class EverestStudioWindow(QMainWindow):
         self.wave_dir_frame.hide()
         self.tornado_dir_frame.hide()
         self.custom_controls_widget.hide()
+        self.dna_dir_frame.hide()
+        self.heatmap_controls_widget.hide()
+        self.audio_controls_widget.hide()
+        self.screen_controls_widget.hide()
+        self.sync_status_lbl.hide()
         self.decay_widget.hide()
         self.profile_container.show()
         self.speed_widget.show()
@@ -983,11 +1231,17 @@ class EverestStudioWindow(QMainWindow):
         self.mode_dual_rb.show()
         self.mode_single_rb.show()
 
-        # Show reactive brightness slider for reactive effects and custom per-key mode
-        is_reactive = effect_key in ("laser", "ripple", "punch", "custom")
+        # Show reactive brightness slider for reactive effects, custom mode, and audio equalizer
+        is_reactive = effect_key in (
+            "laser", "ripple", "punch", "custom",
+            "crosshair", "full_board_flash", "explosion_burst", "typing_heatmap",
+            "audio_equalizer",
+        )
         self.react_bright_widget.setVisible(is_reactive)
 
-        if effect_key == "wave":
+        if self._reconfigure_v3_effect(effect_key):
+            pass
+        elif effect_key == "wave":
             self.wave_dir_frame.show()
             self.speed_title_lbl.setText("WAVE SPEED")
             self.speed_slider.setRange(1, 10)
@@ -1105,6 +1359,242 @@ class EverestStudioWindow(QMainWindow):
         self._update_chip_visibility()
         self._refresh_color_chips()
 
+    def _force_single_or_dual_mode(self):
+        self.mode_rainbow_rb.hide()
+        if self.mode_rainbow_rb.isChecked():
+            self.mode_dual_rb.setChecked(True)
+            self.engine.mode_type = MODE_DUAL
+
+    def _reconfigure_v3_effect(self, effect_key: str) -> bool:
+        """Configures deck sliders and controls for the v3.0 Phase 1 effects."""
+        if effect_key == "row_sweep":
+            self._force_single_or_dual_mode()
+            self.speed_title_lbl.setText("SWEEP SPEED")
+            self.speed_slider.setRange(5, 60)
+            self.speed_slider.setValue(int(self.engine.sweep_speed))
+            self.speed_val_lbl.setText(f"{int(self.engine.sweep_speed)} keys/s")
+            self.decay_widget.show()
+            self.decay_title_lbl.setText("TRAIL LENGTH")
+            self.decay_slider.setRange(10, 120)
+            self.decay_slider.setValue(int(round(self.engine.sweep_trail * 10)))
+            self.decay_val_lbl.setText(f"{self.engine.sweep_trail:.1f} u")
+            self.chip_a_btn.setText("  [Color A: Sweep Trail]  ")
+            self.chip_b_btn.setText("  [Color B: Base Idle]  ")
+            return True
+
+        if effect_key == "waterfall":
+            self.mode_single_rb.hide()
+            self.mode_rainbow_rb.setText("Multi-Tone Spectrum")
+            if self.mode_single_rb.isChecked():
+                self.mode_dual_rb.setChecked(True)
+                self.engine.mode_type = MODE_DUAL
+            self.speed_title_lbl.setText("FLOW SPEED")
+            self.speed_slider.setRange(1, 10)
+            self.speed_slider.setValue(int(self.engine.speed))
+            self.speed_val_lbl.setText(str(int(self.engine.speed)))
+            self.chip_a_btn.setText("  [Color A]  ")
+            self.chip_b_btn.setText("  [Color B]  ")
+            return True
+
+        if effect_key == "aurora":
+            self.palette_row_widget.hide()
+            self.speed_title_lbl.setText("DRIFT SPEED")
+            self.speed_slider.setRange(1, 10)
+            self.speed_slider.setValue(int(self.engine.speed))
+            self.speed_val_lbl.setText(str(int(self.engine.speed)))
+            self.decay_widget.show()
+            self.decay_title_lbl.setText("WAVE SCALE")
+            self.decay_slider.setRange(5, 25)
+            self.decay_slider.setValue(int(round(self.engine.aurora_scale * 10)))
+            self.decay_val_lbl.setText(f"{self.engine.aurora_scale:.1f}x")
+            return True
+
+        if effect_key == "gradient_breathing":
+            self.palette_row_widget.hide()
+            self.speed_title_lbl.setText("BREATHING SPEED")
+            self.speed_slider.setRange(1, 10)
+            self.speed_slider.setValue(int(self.engine.speed))
+            self.speed_val_lbl.setText(str(int(self.engine.speed)))
+            self.decay_widget.show()
+            self.decay_title_lbl.setText("MIN FLOOR BRIGHTNESS")
+            self.decay_slider.setRange(0, 60)
+            self.decay_slider.setValue(int(round(self.engine.breath_min_floor)))
+            self.decay_val_lbl.setText(f"{int(round(self.engine.breath_min_floor))}%")
+            self.chip_a_btn.setText("  [Color A]  ")
+            self.chip_b_btn.setText("  [Color B]  ")
+            return True
+
+        if effect_key == "cosmic_drift":
+            self.palette_row_widget.hide()
+            self.speed_title_lbl.setText("DRIFT SPEED")
+            self.speed_slider.setRange(1, 10)
+            self.speed_slider.setValue(int(self.engine.speed))
+            self.speed_val_lbl.setText(str(int(self.engine.speed)))
+            self.decay_widget.show()
+            self.decay_title_lbl.setText("STAR DENSITY")
+            self.decay_slider.setRange(1, 10)
+            self.decay_slider.setValue(int(round(self.engine.star_density)))
+            self.decay_val_lbl.setText(str(int(round(self.engine.star_density))))
+            return True
+
+        if effect_key == "thunderstorm":
+            self.palette_row_widget.hide()
+            self.speed_title_lbl.setText("STORM INTENSITY")
+            self.speed_slider.setRange(1, 10)
+            self.speed_slider.setValue(int(round(self.engine.storm_intensity)))
+            self.speed_val_lbl.setText(str(int(round(self.engine.storm_intensity))))
+            return True
+
+        if effect_key == "system_malfunction":
+            self.palette_row_widget.hide()
+            self.speed_title_lbl.setText("GLITCH FREQUENCY")
+            self.speed_slider.setRange(1, 10)
+            self.speed_slider.setValue(int(round(self.engine.glitch_freq)))
+            self.speed_val_lbl.setText(str(int(round(self.engine.glitch_freq))))
+            self.chip_a_btn.setText("  [Color A: Theme Primary]  ")
+            self.chip_b_btn.setText("  [Color B: Theme Secondary]  ")
+            return True
+
+        if effect_key == "dna_spiral":
+            self.palette_row_widget.hide()
+            self.dna_dir_frame.show()
+            self.dna_outward_btn.setChecked(self.engine.dna_outward)
+            self.dna_inward_btn.setChecked(not self.engine.dna_outward)
+            self.speed_title_lbl.setText("ROTATION SPEED")
+            self.speed_slider.setRange(1, 10)
+            self.speed_slider.setValue(int(self.engine.speed))
+            self.speed_val_lbl.setText(str(int(self.engine.speed)))
+            self.decay_widget.show()
+            self.decay_title_lbl.setText("TWIST DENSITY")
+            self.decay_slider.setRange(1, 10)
+            self.decay_slider.setValue(int(round(self.engine.dna_twist)))
+            self.decay_val_lbl.setText(str(int(round(self.engine.dna_twist))))
+            self.chip_a_btn.setText("  [Color A: Strand 1]  ")
+            self.chip_b_btn.setText("  [Color B: Strand 2]  ")
+            return True
+
+        if effect_key == "meteor_shower":
+            self.mode_single_rb.hide()
+            if self.mode_single_rb.isChecked():
+                self.mode_dual_rb.setChecked(True)
+                self.engine.mode_type = MODE_DUAL
+            self.speed_title_lbl.setText("METEOR SPEED")
+            self.speed_slider.setRange(1, 10)
+            self.speed_slider.setValue(int(self.engine.speed))
+            self.speed_val_lbl.setText(str(int(self.engine.speed)))
+            self.decay_widget.show()
+            self.decay_title_lbl.setText("METEOR COUNT")
+            self.decay_slider.setRange(4, 10)
+            self.decay_slider.setValue(int(self.engine.meteor_count))
+            self.decay_val_lbl.setText(str(int(self.engine.meteor_count)))
+            self.chip_a_btn.setText("  [Color A: Meteor]  ")
+            self.chip_b_btn.setText("  [Color B: Sky Accent]  ")
+            return True
+
+        if effect_key == "crosshair":
+            self._force_single_or_dual_mode()
+            self.speed_title_lbl.setText("BEAM PROPAGATION SPEED")
+            self.speed_slider.setRange(10, 120)
+            self.speed_slider.setValue(int(self.engine.crosshair_speed))
+            self.speed_val_lbl.setText(f"{int(self.engine.crosshair_speed)} keys/s")
+            self.decay_widget.show()
+            self.decay_title_lbl.setText("DECAY DURATION")
+            self.decay_slider.setRange(10, 300)
+            self.decay_slider.setValue(int(round(self.engine.crosshair_decay * 100)))
+            self.decay_val_lbl.setText(f"{self.engine.crosshair_decay:.2f} s")
+            self.chip_a_btn.setText("  [Color A: Beam]  ")
+            self.chip_b_btn.setText("  [Color B: Base Idle]  ")
+            return True
+
+        if effect_key == "full_board_flash":
+            self._force_single_or_dual_mode()
+            self.speed_widget.hide()
+            self.decay_widget.show()
+            self.decay_title_lbl.setText("DECAY DURATION")
+            self.decay_slider.setRange(10, 300)
+            self.decay_slider.setValue(int(round(self.engine.flash_decay * 100)))
+            self.decay_val_lbl.setText(f"{self.engine.flash_decay:.2f} s")
+            self.chip_a_btn.setText("  [Color A: Flash Pulse]  ")
+            self.chip_b_btn.setText("  [Color B: Base Idle]  ")
+            return True
+
+        if effect_key == "explosion_burst":
+            self._force_single_or_dual_mode()
+            self.speed_title_lbl.setText("BLAST SPEED")
+            self.speed_slider.setRange(8, 60)
+            self.speed_slider.setValue(int(self.engine.explosion_speed))
+            self.speed_val_lbl.setText(f"{int(self.engine.explosion_speed)} keys/s")
+            self.decay_widget.show()
+            self.decay_title_lbl.setText("DECAY LIFETIME")
+            self.decay_slider.setRange(15, 300)
+            self.decay_slider.setValue(int(round(self.engine.explosion_decay * 100)))
+            self.decay_val_lbl.setText(f"{self.engine.explosion_decay:.2f} s")
+            self.chip_a_btn.setText("  [Color A: Blast Wave]  ")
+            self.chip_b_btn.setText("  [Color B: Base Idle]  ")
+            return True
+
+        if effect_key == "typing_heatmap":
+            self.palette_row_widget.hide()
+            self.heatmap_controls_widget.show()
+            is_live = self.engine.heatmap_mode == "live"
+            self.heatmap_live_btn.setChecked(is_live)
+            self.heatmap_persist_btn.setChecked(not is_live)
+            self.speed_widget.setVisible(is_live)
+            self.speed_title_lbl.setText("COOLDOWN SPEED")
+            self.speed_slider.setRange(1, 10)
+            self.speed_slider.setValue(int(round(self.engine.heatmap_cooldown)))
+            self.speed_val_lbl.setText(str(int(round(self.engine.heatmap_cooldown))))
+            return True
+
+        if effect_key == "audio_equalizer":
+            self.mode_single_rb.hide()
+            self.mode_rainbow_rb.setText("Rainbow Spectrum")
+            if self.mode_single_rb.isChecked():
+                self.mode_dual_rb.setChecked(True)
+                self.engine.mode_type = MODE_DUAL
+            self.audio_controls_widget.show()
+            is_bars = self.engine.audio_style != "bass_pulse"
+            self.audio_bars_btn.setChecked(is_bars)
+            self.audio_bass_btn.setChecked(not is_bars)
+            self.sync_status_lbl.show()
+            self._refresh_sync_status_hint()
+            self.speed_title_lbl.setText("SENSITIVITY / GAIN")
+            self.speed_slider.setRange(5, 40)
+            self.speed_slider.setValue(int(round(self.engine.audio_gain * 10)))
+            self.speed_val_lbl.setText(f"{self.engine.audio_gain:.1f}x")
+            self.decay_widget.show()
+            self.decay_title_lbl.setText("SMOOTHING")
+            self.decay_slider.setRange(0, 90)
+            self.decay_slider.setValue(int(round(self.engine.audio_smoothing * 100)))
+            self.decay_val_lbl.setText(f"{self.engine.audio_smoothing:.2f}")
+            self.chip_a_btn.setText("  [Color A: Peak]  ")
+            self.chip_b_btn.setText("  [Color B: Base / Low]  ")
+            return True
+
+        if effect_key == "screen_ambilight":
+            self.palette_row_widget.hide()
+            self.screen_controls_widget.show()
+            is_grid = self.engine.screen_mode != "edges"
+            self.screen_grid_btn.setChecked(is_grid)
+            self.screen_edges_btn.setChecked(not is_grid)
+            mon_idx_pos = self.monitor_combo.findData(self.engine.screen_monitor)
+            if mon_idx_pos >= 0:
+                self.monitor_combo.setCurrentIndex(mon_idx_pos)
+            self.sync_status_lbl.show()
+            self._refresh_sync_status_hint()
+            self.speed_title_lbl.setText("TEMPORAL SMOOTHING")
+            self.speed_slider.setRange(0, 90)
+            self.speed_slider.setValue(int(round(self.engine.screen_smoothing * 100)))
+            self.speed_val_lbl.setText(f"{self.engine.screen_smoothing:.2f}")
+            self.decay_widget.show()
+            self.decay_title_lbl.setText("SATURATION BOOST")
+            self.decay_slider.setRange(10, 25)
+            self.decay_slider.setValue(int(round(self.engine.screen_saturation * 10)))
+            self.decay_val_lbl.setText(f"{self.engine.screen_saturation:.1f}x")
+            return True
+
+        return False
+
     def _on_mode_type_toggled(self):
         if self.mode_rainbow_rb.isChecked():
             self.engine.mode_type = MODE_RAINBOW
@@ -1123,8 +1613,18 @@ class EverestStudioWindow(QMainWindow):
 
     def _update_chip_visibility(self):
         eff = self.engine.effect_name
-        if eff in ("off", "custom"):
+        no_chips = (
+            "off", "custom", "aurora", "cosmic_drift", "thunderstorm",
+            "typing_heatmap", "screen_ambilight",
+        )
+        if eff in no_chips:
             self.chips_row_widget.hide()
+            return
+
+        if eff in ("gradient_breathing", "system_malfunction", "dna_spiral"):
+            self.chips_row_widget.show()
+            self.chip_a_btn.show()
+            self.chip_b_btn.show()
             return
 
         if eff == "static":
@@ -1142,7 +1642,9 @@ class EverestStudioWindow(QMainWindow):
                 self.chips_row_widget.hide()
             return
 
-        if self.mode_rainbow_rb.isChecked() and eff in ("wave", "tornado", "breathing"):
+        if self.mode_rainbow_rb.isChecked() and eff in (
+            "wave", "tornado", "breathing", "waterfall", "meteor_shower", "audio_equalizer",
+        ):
             self.chips_row_widget.hide()
         elif self.mode_dual_rb.isChecked():
             self.chips_row_widget.show()
@@ -1232,7 +1734,10 @@ class EverestStudioWindow(QMainWindow):
                 self.engine.erase_custom_key(led_idx)
             if not self._suppress_slider_events:
                 self.save_settings()
-        elif self.engine.effect_name in ("laser", "ripple", "punch"):
+        elif self.engine.effect_name in (
+            "laser", "ripple", "punch", "crosshair",
+            "full_board_flash", "explosion_burst", "typing_heatmap",
+        ):
             self.engine.trigger_switch(led_idx)
 
     def _fill_all_custom_keys(self):
@@ -1261,6 +1766,69 @@ class EverestStudioWindow(QMainWindow):
         self.tornado_ccw_btn.setChecked(not clockwise)
         if not self._suppress_slider_events:
             self.save_settings()
+
+    def _set_dna_direction(self, outward: bool):
+        self.engine.dna_outward = bool(outward)
+        if hasattr(self, "dna_outward_btn"):
+            self.dna_outward_btn.setChecked(self.engine.dna_outward)
+        if hasattr(self, "dna_inward_btn"):
+            self.dna_inward_btn.setChecked(not self.engine.dna_outward)
+        if not self._suppress_slider_events:
+            self.save_settings()
+
+    def _set_heatmap_mode(self, mode: str):
+        clean_mode = "persistent" if mode == "persistent" else "live"
+        self.engine.heatmap_mode = clean_mode
+        is_live = clean_mode == "live"
+        if hasattr(self, "heatmap_live_btn"):
+            self.heatmap_live_btn.setChecked(is_live)
+        if hasattr(self, "heatmap_persist_btn"):
+            self.heatmap_persist_btn.setChecked(not is_live)
+        if self.engine.effect_name == "typing_heatmap" and hasattr(self, "speed_widget"):
+            self.speed_widget.setVisible(is_live)
+        if not self._suppress_slider_events:
+            self.save_settings()
+
+    def _on_reset_heatmap_clicked(self):
+        self.engine.reset_heatmap()
+
+    def _set_audio_style(self, style: str):
+        clean_style = "bass_pulse" if style == "bass_pulse" else "bars"
+        self.engine.audio_style = clean_style
+        if hasattr(self, "audio_bars_btn"):
+            self.audio_bars_btn.setChecked(clean_style == "bars")
+        if hasattr(self, "audio_bass_btn"):
+            self.audio_bass_btn.setChecked(clean_style == "bass_pulse")
+        if not self._suppress_slider_events:
+            self.save_settings()
+
+    def _set_screen_mode(self, mode: str):
+        clean_mode = "edges" if mode == "edges" else "grid"
+        self.engine.screen_mode = clean_mode
+        if hasattr(self, "screen_grid_btn"):
+            self.screen_grid_btn.setChecked(clean_mode == "grid")
+        if hasattr(self, "screen_edges_btn"):
+            self.screen_edges_btn.setChecked(clean_mode == "edges")
+        if not self._suppress_slider_events:
+            self.save_settings()
+
+    def _on_monitor_changed(self, _idx: int):
+        if self._suppress_slider_events or not hasattr(self, "monitor_combo"):
+            return
+        mon = self.monitor_combo.currentData()
+        if mon is not None:
+            self.engine.screen_monitor = int(mon)
+            self.save_settings()
+
+    def _refresh_sync_status_hint(self):
+        """Updates inline status banner when Audio Equalizer or Screen Ambilight is active."""
+        if not hasattr(self, "sync_status_lbl"):
+            return
+        eff = self.engine.effect_name
+        if eff == "audio_equalizer":
+            self.sync_status_lbl.setText(f"Audio Status: {self.engine.audio_worker.status_message}")
+        elif eff == "screen_ambilight":
+            self.sync_status_lbl.setText(f"Screen Status: {self.engine.screen_worker.status_message}")
 
     def _set_underglow_mode(self, mode: str):
         self.engine.underglow_mode = mode
@@ -1292,6 +1860,32 @@ class EverestStudioWindow(QMainWindow):
         elif eff == "ripple":
             self.engine.ripple_speed = float(val)
             self.speed_val_lbl.setText(f"{val} keys/s")
+        elif eff == "row_sweep":
+            self.engine.sweep_speed = float(val)
+            self.speed_val_lbl.setText(f"{val} keys/s")
+        elif eff == "thunderstorm":
+            self.engine.storm_intensity = float(val)
+            self.speed_val_lbl.setText(str(val))
+        elif eff == "system_malfunction":
+            self.engine.glitch_freq = float(val)
+            self.speed_val_lbl.setText(str(val))
+        elif eff == "crosshair":
+            self.engine.crosshair_speed = float(val)
+            self.speed_val_lbl.setText(f"{val} keys/s")
+        elif eff == "explosion_burst":
+            self.engine.explosion_speed = float(val)
+            self.speed_val_lbl.setText(f"{val} keys/s")
+        elif eff == "typing_heatmap":
+            self.engine.heatmap_cooldown = float(val)
+            self.speed_val_lbl.setText(str(val))
+        elif eff == "audio_equalizer":
+            gain = val / 10.0
+            self.engine.audio_gain = gain
+            self.speed_val_lbl.setText(f"{gain:.1f}x")
+        elif eff == "screen_ambilight":
+            smooth = val / 100.0
+            self.engine.screen_smoothing = smooth
+            self.speed_val_lbl.setText(f"{smooth:.2f}")
         else:
             self.engine.speed = float(val)
             self.speed_val_lbl.setText(str(val))
@@ -1300,15 +1894,50 @@ class EverestStudioWindow(QMainWindow):
     def _on_decay_slider_changed(self, val: int):
         if self._suppress_slider_events:
             return
-        seconds = val / 100.0
         eff = self.engine.effect_name
-        if eff == "laser":
-            self.engine.laser_decay = seconds
-        elif eff == "punch":
-            self.engine.punch_decay = seconds
-        elif eff == "ripple":
-            self.engine.ripple_decay = seconds
-        self.decay_val_lbl.setText(f"{seconds:.2f} s")
+        if eff == "row_sweep":
+            trail = val / 10.0
+            self.engine.sweep_trail = trail
+            self.decay_val_lbl.setText(f"{trail:.1f} u")
+        elif eff == "aurora":
+            scale = val / 10.0
+            self.engine.aurora_scale = scale
+            self.decay_val_lbl.setText(f"{scale:.1f}x")
+        elif eff == "gradient_breathing":
+            self.engine.breath_min_floor = float(val)
+            self.decay_val_lbl.setText(f"{val}%")
+        elif eff == "cosmic_drift":
+            self.engine.star_density = float(val)
+            self.decay_val_lbl.setText(str(val))
+        elif eff == "dna_spiral":
+            self.engine.dna_twist = float(val)
+            self.decay_val_lbl.setText(str(val))
+        elif eff == "meteor_shower":
+            self.engine.meteor_count = int(val)
+            self.decay_val_lbl.setText(str(val))
+        elif eff == "audio_equalizer":
+            smooth = val / 100.0
+            self.engine.audio_smoothing = smooth
+            self.decay_val_lbl.setText(f"{smooth:.2f}")
+        elif eff == "screen_ambilight":
+            sat = val / 10.0
+            self.engine.screen_saturation = sat
+            self.decay_val_lbl.setText(f"{sat:.1f}x")
+        else:
+            seconds = val / 100.0
+            if eff == "laser":
+                self.engine.laser_decay = seconds
+            elif eff == "punch":
+                self.engine.punch_decay = seconds
+            elif eff == "ripple":
+                self.engine.ripple_decay = seconds
+            elif eff == "crosshair":
+                self.engine.crosshair_decay = seconds
+            elif eff == "full_board_flash":
+                self.engine.flash_decay = seconds
+            elif eff == "explosion_burst":
+                self.engine.explosion_decay = seconds
+            self.decay_val_lbl.setText(f"{seconds:.2f} s")
         self.save_settings()
 
     def _on_base_brightness_changed(self, val: int):
@@ -1463,23 +2092,64 @@ class EverestStudioWindow(QMainWindow):
             },
         }
 
-        if eff in ("wave", "tornado", "breathing"):
+        if eff in ("wave", "tornado", "breathing", "waterfall", "meteor_shower", "audio_equalizer"):
             base_defaults["1"]["palette_mode"] = MODE_RAINBOW
             base_defaults["1"]["color_mode"] = MODE_RAINBOW
             for k in base_defaults:
                 base_defaults[k]["base_brightness"] = 100
+            if eff == "audio_equalizer":
+                base_defaults["1"]["base_brightness"] = 10
+                base_defaults["1"]["reactive_brightness"] = 100
+                base_defaults["1"]["color_a"] = "#FF007F"
+                base_defaults["1"]["color_b"] = "#001840"
+        elif eff in ("aurora", "cosmic_drift", "thunderstorm", "row_sweep", "gradient_breathing", "system_malfunction", "dna_spiral"):
+            for k in base_defaults:
+                base_defaults[k]["base_brightness"] = 100
+            if eff == "system_malfunction":
+                base_defaults["1"]["color_a"] = "#B026FF"
+                base_defaults["1"]["color_b"] = "#FF007F"
+            elif eff == "dna_spiral":
+                base_defaults["1"]["color_a"] = "#00F0FF"
+                base_defaults["1"]["color_b"] = "#FF007F"
+            elif eff == "gradient_breathing":
+                base_defaults["1"]["color_a"] = "#00D4FF"
+                base_defaults["1"]["color_b"] = "#8A2BE2"
         elif eff == "matrix":
             base_defaults["1"]["palette_mode"] = "matrix_classic"
             base_defaults["1"]["color_mode"] = "matrix_classic"
             for k in base_defaults:
                 base_defaults[k]["base_brightness"] = 100
-        elif eff in ("static", "custom"):
+        elif eff in ("static", "custom", "audio_equalizer", "screen_ambilight"):
             for k in base_defaults:
                 base_defaults[k]["base_brightness"] = 100
 
         for slot_k in base_defaults:
             base_defaults[slot_k]["mode"] = eff
             base_defaults[slot_k]["brightness"] = base_defaults[slot_k]["base_brightness"]
+            base_defaults[slot_k].setdefault("sweep_speed", 25)
+            base_defaults[slot_k].setdefault("sweep_trail", 4.0)
+            base_defaults[slot_k].setdefault("aurora_scale", 1.0)
+            base_defaults[slot_k].setdefault("breath_min_floor", 10)
+            base_defaults[slot_k].setdefault("star_density", 5)
+            base_defaults[slot_k].setdefault("storm_intensity", 5)
+            base_defaults[slot_k].setdefault("glitch_freq", 5)
+            base_defaults[slot_k].setdefault("dna_twist", 5)
+            base_defaults[slot_k].setdefault("dna_outward", True)
+            base_defaults[slot_k].setdefault("meteor_count", 6)
+            base_defaults[slot_k].setdefault("crosshair_speed", 50)
+            base_defaults[slot_k].setdefault("crosshair_decay", 0.45)
+            base_defaults[slot_k].setdefault("flash_decay", 0.40)
+            base_defaults[slot_k].setdefault("explosion_speed", 28)
+            base_defaults[slot_k].setdefault("explosion_decay", 0.65)
+            base_defaults[slot_k].setdefault("heatmap_mode", "live")
+            base_defaults[slot_k].setdefault("heatmap_cooldown", 5)
+            base_defaults[slot_k].setdefault("audio_style", "bars")
+            base_defaults[slot_k].setdefault("audio_gain", 1.5)
+            base_defaults[slot_k].setdefault("audio_smoothing", 0.50)
+            base_defaults[slot_k].setdefault("screen_mode", "grid")
+            base_defaults[slot_k].setdefault("screen_smoothing", 0.55)
+            base_defaults[slot_k].setdefault("screen_saturation", 1.5)
+            base_defaults[slot_k].setdefault("screen_monitor", 1)
 
         return base_defaults
 
@@ -1523,6 +2193,30 @@ class EverestStudioWindow(QMainWindow):
             "underglow_brightness": int(self.engine.underglow_brightness),
             "direction": self.engine.direction,
             "tornado_cw": self.engine.tornado_cw,
+            "sweep_speed": int(self.engine.sweep_speed),
+            "sweep_trail": round(self.engine.sweep_trail, 1),
+            "aurora_scale": round(self.engine.aurora_scale, 1),
+            "breath_min_floor": int(round(self.engine.breath_min_floor)),
+            "star_density": int(round(self.engine.star_density)),
+            "storm_intensity": int(round(self.engine.storm_intensity)),
+            "glitch_freq": int(round(self.engine.glitch_freq)),
+            "dna_twist": int(round(self.engine.dna_twist)),
+            "dna_outward": bool(self.engine.dna_outward),
+            "meteor_count": int(self.engine.meteor_count),
+            "crosshair_speed": int(self.engine.crosshair_speed),
+            "crosshair_decay": round(self.engine.crosshair_decay, 2),
+            "flash_decay": round(self.engine.flash_decay, 2),
+            "explosion_speed": int(self.engine.explosion_speed),
+            "explosion_decay": round(self.engine.explosion_decay, 2),
+            "heatmap_mode": self.engine.heatmap_mode,
+            "heatmap_cooldown": int(round(self.engine.heatmap_cooldown)),
+            "audio_style": self.engine.audio_style,
+            "audio_gain": round(self.engine.audio_gain, 1),
+            "audio_smoothing": round(self.engine.audio_smoothing, 2),
+            "screen_mode": self.engine.screen_mode,
+            "screen_smoothing": round(self.engine.screen_smoothing, 2),
+            "screen_saturation": round(self.engine.screen_saturation, 1),
+            "screen_monitor": int(self.engine.screen_monitor),
         }
         if self.engine.effect_name == "custom":
             d["custom_colors"] = {
@@ -1622,6 +2316,54 @@ class EverestStudioWindow(QMainWindow):
                 self.engine.ripple_decay = float(cfg["ripple_decay"])
             if "matrix_speed" in cfg:
                 self.engine.matrix_speed = float(cfg["matrix_speed"])
+            if "sweep_speed" in cfg:
+                self.engine.sweep_speed = float(cfg["sweep_speed"])
+            if "sweep_trail" in cfg:
+                self.engine.sweep_trail = float(cfg["sweep_trail"])
+            if "aurora_scale" in cfg:
+                self.engine.aurora_scale = float(cfg["aurora_scale"])
+            if "breath_min_floor" in cfg:
+                self.engine.breath_min_floor = float(cfg["breath_min_floor"])
+            if "star_density" in cfg:
+                self.engine.star_density = float(cfg["star_density"])
+            if "storm_intensity" in cfg:
+                self.engine.storm_intensity = float(cfg["storm_intensity"])
+            if "glitch_freq" in cfg:
+                self.engine.glitch_freq = float(cfg["glitch_freq"])
+            if "dna_twist" in cfg:
+                self.engine.dna_twist = float(cfg["dna_twist"])
+            if "dna_outward" in cfg:
+                self._set_dna_direction(bool(cfg["dna_outward"]))
+            if "meteor_count" in cfg:
+                self.engine.meteor_count = int(cfg["meteor_count"])
+            if "crosshair_speed" in cfg:
+                self.engine.crosshair_speed = float(cfg["crosshair_speed"])
+            if "crosshair_decay" in cfg:
+                self.engine.crosshair_decay = float(cfg["crosshair_decay"])
+            if "flash_decay" in cfg:
+                self.engine.flash_decay = float(cfg["flash_decay"])
+            if "explosion_speed" in cfg:
+                self.engine.explosion_speed = float(cfg["explosion_speed"])
+            if "explosion_decay" in cfg:
+                self.engine.explosion_decay = float(cfg["explosion_decay"])
+            if "heatmap_mode" in cfg:
+                self._set_heatmap_mode(cfg["heatmap_mode"])
+            if "heatmap_cooldown" in cfg:
+                self.engine.heatmap_cooldown = float(cfg["heatmap_cooldown"])
+            if "audio_style" in cfg:
+                self._set_audio_style(cfg["audio_style"])
+            if "audio_gain" in cfg:
+                self.engine.audio_gain = float(cfg["audio_gain"])
+            if "audio_smoothing" in cfg:
+                self.engine.audio_smoothing = float(cfg["audio_smoothing"])
+            if "screen_mode" in cfg:
+                self._set_screen_mode(cfg["screen_mode"])
+            if "screen_smoothing" in cfg:
+                self.engine.screen_smoothing = float(cfg["screen_smoothing"])
+            if "screen_saturation" in cfg:
+                self.engine.screen_saturation = float(cfg["screen_saturation"])
+            if "screen_monitor" in cfg:
+                self.engine.screen_monitor = max(1, int(cfg["screen_monitor"]))
 
             if "direction" in cfg:
                 self.engine.direction = cfg["direction"]
@@ -1727,7 +2469,7 @@ class EverestStudioWindow(QMainWindow):
 
         if not os.path.exists(cfg_path):
             self.effect_profiles = {}
-            for eff in ("wave", "tornado", "breathing", "laser", "matrix", "ripple", "punch", "static", "custom", "off"):
+            for eff in ALL_EFFECT_KEYS:
                 self.effect_profiles[eff] = {
                     "active_slot": 1,
                     "slots": self._get_default_slots_for_effect(eff)
@@ -1748,13 +2490,15 @@ class EverestStudioWindow(QMainWindow):
         dock_pos = cfg.get("dock_position", DIR_RIGHT)
         self._set_dock_position(dock_pos)
 
-        # 2. Per-Effect Profiles
+        # 2. Per-Effect Profiles (backward-compatible auto-init for new v3.0 effects)
         raw_eff_profiles = cfg.get("effect_profiles")
         if isinstance(raw_eff_profiles, dict) and raw_eff_profiles:
             self.effect_profiles = raw_eff_profiles
+            for eff in ALL_EFFECT_KEYS:
+                self._get_or_create_effect_profile(eff)
         else:
             self.effect_profiles = {}
-            for eff in ("wave", "tornado", "breathing", "laser", "matrix", "ripple", "punch", "static", "custom", "off"):
+            for eff in ALL_EFFECT_KEYS:
                 self.effect_profiles[eff] = {
                     "active_slot": 1,
                     "slots": self._get_default_slots_for_effect(eff)
