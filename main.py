@@ -22,10 +22,34 @@ def is_port_open(port=6742):
         return s.connect_ex(('127.0.0.1', port)) == 0
 
 
+def is_openrgb_running() -> bool:
+    """True if OpenRGB.exe is already in the process list (prevents duplicate instances)."""
+    if os.name != 'nt':
+        return False
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {OPENRGB_EXE}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        ).stdout
+        return OPENRGB_EXE.lower() in out.lower()
+    except Exception:
+        return False
+
+
 def ensure_openrgb():
-    """Silently spawns OpenRGB SDK server if not currently active."""
+    """Spawns the OpenRGB SDK server only if neither the port nor the process already exists."""
     if is_port_open(6742):
         return True
+
+    if is_openrgb_running():
+        # Already running (possibly still starting its server): wait, never spawn a second one.
+        for _ in range(15):
+            time.sleep(0.4)
+            if is_port_open(6742):
+                return True
+        print("[WARN] OpenRGB.exe is running but SDK port 6742 is closed; not spawning a duplicate.")
+        return False
 
     base_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 

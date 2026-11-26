@@ -2,8 +2,8 @@
 Everest Studio Pro - Dedicated Lighting Engine QThread.
 Maintains 35 FPS hardware-synchronized frame clock, socket stability,
 device enumeration retry loops, zero-copy Signal(object) frame emission,
-full 44-LED underglow management, persistent background auto-reconnect supervisor,
-and low-latency global pynput hooks.
+full 147-LED modular underglow and numpad dock management (Detached/Left/Right),
+dual base/reactive brightness pipeline, and low-latency global pynput hooks.
 """
 
 import sys
@@ -11,8 +11,11 @@ import time
 import socket
 import subprocess
 import os
+import math
 import threading
-from typing import Dict, List, Tuple, Optional, Set
+import traceback
+import ctypes
+from typing import Any, Dict, List, Tuple, Optional, Set
 from PySide6.QtCore import QThread, Signal
 from openrgb import OpenRGBClient
 from openrgb.utils import RGBColor
@@ -29,12 +32,27 @@ if not hasattr(RGBColor, "b"):
 from engine import matrix
 from engine.matrix import (
     KEY_DEFINITIONS,
-    EDGE_INDICES,
-    SWITCH_INDICES,
+    NUMPAD_KEY_DEFINITIONS,
+    ALL_KEY_DEFINITIONS,
+    MAIN_SWITCH_INDICES,
+    NUMPAD_SWITCH_INDICES,
+    ALL_SWITCH_INDICES,
+    MAIN_EDGE_INDICES,
+    NUMPAD_EDGE_INDICES,
+    ALL_EDGE_INDICES,
+    NUMPAD_VKS,
+    INDEX_TO_KEY,
+    build_key_coordinates,
     build_matrix_coords,
+    build_edge_coords,
     build_key_lookups,
 )
-from engine.effects import EffectRenderer, scale_brightness, blend_colors
+from engine.effects import EffectRenderer, scale_brightness
+
+OPENRGB_EXE = "OpenRGB.exe"
+EXPECTED_LED_COUNT = 147
+MSG_OFFLINE_SIMULATOR = "OFFLINE / SIMULATOR"
+MSG_CONNECTED = "CONNECTED"
 
 
 def check_socket_open(host: str = "127.0.0.1", port: int = 6742, timeout: float = 0.30) -> bool:
@@ -45,11 +63,11 @@ def check_socket_open(host: str = "127.0.0.1", port: int = 6742, timeout: float 
         s.connect((host, port))
         s.close()
         return True
-    except (socket.timeout, ConnectionRefusedError, OSError):
+    except OSError:
         return False
 
 
-def spawn_openrgb_server() -> bool:
+def spawn_openrgb_server(wait_seconds: float = 8.0) -> bool:
     """
     Auto-spawns OpenRGB in silent minimized server mode if installed locally.
     Uses CREATE_NO_WINDOW and SW_HIDE so no console window flashes.
@@ -60,19 +78,19 @@ def spawn_openrgb_server() -> bool:
         else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
     candidates = [
-        os.path.join(base_dir, "OpenRGB.exe"),
-        os.path.join(base_dir, "dist", "OpenRGB.exe"),
-        os.path.join(os.getcwd(), "OpenRGB.exe"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "OpenRGB", "OpenRGB.exe"),
-        os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "OpenRGB", "OpenRGB.exe"),
-        os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"), "OpenRGB", "OpenRGB.exe"),
-        "C:\\OpenRGB\\OpenRGB.exe",
+        os.path.join(base_dir, OPENRGB_EXE),
+        os.path.join(base_dir, "dist", OPENRGB_EXE),
+        os.path.join(os.getcwd(), OPENRGB_EXE),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "OpenRGB", OPENRGB_EXE),
+        os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "OpenRGB", OPENRGB_EXE),
+        os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"), "OpenRGB", OPENRGB_EXE),
+        os.path.join("C:\\OpenRGB", OPENRGB_EXE),
     ]
 
     target = next((p for p in candidates if os.path.exists(p)), None)
     if not target:
         import shutil
-        target = shutil.which("OpenRGB.exe") or shutil.which("OpenRGB")
+        target = shutil.which(OPENRGB_EXE) or shutil.which("OpenRGB")
 
     if target:
         try:
@@ -85,8 +103,9 @@ def spawn_openrgb_server() -> bool:
                 startupinfo=info,
                 creationflags=creationflags,
             )
-            for _ in range(15):
-                time.sleep(0.4)
+            deadline = time.time() + max(0.5, float(wait_seconds))
+            while time.time() < deadline:
+                time.sleep(0.25)
                 if check_socket_open():
                     return True
         except Exception:
@@ -94,18 +113,210 @@ def spawn_openrgb_server() -> bool:
     return False
 
 
+def _client_socket(client):
+    """Returns the underlying TCP socket of an OpenRGBClient (client.comms.sock)."""
+    comms = getattr(client, "comms", None)
+    return getattr(comms, "sock", None) or getattr(client, "sock", None)
+
+
+def is_openrgb_process_running() -> bool:
+    """Returns True if an OpenRGB.exe process already exists (never spawn a second one)."""
+    if os.name != "nt":
+        return False
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {OPENRGB_EXE}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        ).stdout
+        return OPENRGB_EXE.lower() in out.lower()
+    except Exception:
+        return False
+
+
+def ensure_openrgb_server() -> bool:
+    """
+    Guarantees the SDK server is reachable WITHOUT creating duplicate instances:
+    port open -> done; process already running -> wait for its port; else spawn once.
+    """
+    if check_socket_open():
+        return True
+    if is_openrgb_process_running():
+        for _ in range(15):
+            time.sleep(0.4)
+            if check_socket_open():
+                return True
+        return False
+    return spawn_openrgb_server()
+
+
+def calculate_ripple_intensity(
+    x: float,
+    y: float,
+    now: float,
+    active_ripples: List[Dict[str, float]],
+    speed: float,
+    decay: float
+) -> float:
+    """Calculates normalized wave intensity (0.0 to 1.0) from expanding ripple rings."""
+    max_intensity = 0.0
+    safe_decay = max(0.05, decay)
+    for w in active_ripples:
+        dt = now - w["t0"]
+        if dt >= safe_decay or dt < 0.0:
+            continue
+        dist = math.hypot(x - w["x"], y - w["y"])
+        wave_r = speed * dt
+        ring_width = min(1.3, 0.7 + (dt * 1.2))
+        delta = abs(dist - wave_r)
+        if delta < ring_width:
+            norm = delta / ring_width
+            ring_shape = 0.5 * (1.0 + math.cos(math.pi * norm))
+            time_fade = 1.0 - (dt / safe_decay)
+            attenuation = 1.0 / (1.0 + 0.12 * dist)
+            val = ring_shape * time_fade * attenuation
+            if val > max_intensity:
+                max_intensity = val
+    return max(0.0, min(1.0, max_intensity))
+
+
+def _calc_single_laser_wave(
+    x: float,
+    y: float,
+    now: float,
+    laser_y: float,
+    origin_x: float,
+    t0: float,
+    laser_speed: float,
+    laser_decay: float,
+    pulse_width: float,
+) -> float:
+    """Calculates laser intensity from a single row strike with strict row-lock isolation."""
+    if abs(y - laser_y) > 0.15:
+        return 0.0
+
+    dt = now - t0
+    if dt < 0.0:
+        return 0.0
+
+    dist = abs(x - origin_x)
+    laser_head = dt * laser_speed
+    delta = laser_head - dist
+    tail_len = max(0.1, laser_speed * laser_decay)
+
+    if 0.0 <= delta < tail_len:
+        decay_progress = delta / tail_len
+        return (1.0 - decay_progress) ** 2.0
+    if -pulse_width <= delta < 0.0:
+        return 1.0 + (delta / pulse_width)
+    return 0.0
+
+
+def calculate_laser_intensity(
+    x: float,
+    y: float,
+    now: float,
+    active_rows: Dict[Any, Tuple[float, ...]],
+    laser_speed: float,
+    laser_decay: float,
+    pulse_width: float,
+) -> float:
+    """Calculates laser beam intensity with strict row-lock isolation."""
+    if not active_rows:
+        return 0.0
+
+    max_intensity = 0.0
+    for laser_y_key, row_data in list(active_rows.items()):
+        if len(row_data) >= 3:
+            ox, ly, t0 = row_data[0], row_data[1], row_data[2]
+        elif len(row_data) == 2:
+            ox, t0 = row_data
+            try:
+                ly_val = float(laser_y_key)
+                ly = ly_val + 0.5 if abs(ly_val - round(ly_val)) < 0.01 else ly_val
+            except (ValueError, TypeError):
+                continue
+        else:
+            continue
+
+        intensity = _calc_single_laser_wave(
+            x, y, now, ly, ox, t0, laser_speed, laser_decay, pulse_width
+        )
+        if intensity > max_intensity:
+            max_intensity = intensity
+
+    return max(0.0, min(1.0, max_intensity))
+
+
+def calculate_punch_intensity(
+    idx: int,
+    now: float,
+    active_punches: Dict[int, float],
+    punch_decay: float
+) -> float:
+    """Calculates linear decay flare intensity for a single key index."""
+    if idx not in active_punches:
+        return 0.0
+    dt = now - active_punches[idx]
+    safe_decay = max(0.05, punch_decay)
+    if dt < safe_decay:
+        return max(0.0, min(1.0, 1.0 - (dt / safe_decay)))
+    return 0.0
+
+
+def calculate_punch_edge_intensity(
+    ex: float,
+    ey: float,
+    now: float,
+    active_punches: Dict[int, float],
+    punch_decay: float,
+    key_coords: Dict[int, Tuple[float, float]]
+) -> float:
+    """Calculates falloff flare intensity on perimeter diffusers from punched switches."""
+    if not active_punches:
+        return 0.0
+    safe_decay = max(0.05, punch_decay)
+    max_intensity = 0.0
+    for p_idx, t0 in active_punches.items():
+        dt = now - t0
+        if dt < safe_decay:
+            kx, ky = key_coords.get(p_idx, (7.5, 2.0))
+            dist = math.hypot(ex - kx, ey - ky)
+            fade = 1.0 - (dt / safe_decay)
+            falloff = 1.0 / (1.0 + 0.35 * dist)
+            val = fade * falloff
+            if val > max_intensity:
+                max_intensity = val
+    return max(0.0, min(1.0, max_intensity))
+
+
+def blend_reactive(idle_base: RGBColor, strike_color: RGBColor, react_factor: float, intensity: float) -> RGBColor:
+    """
+    Independent dual-brightness blend:
+    r = min(255, int(base_r) + int(color_a.r * react_factor * intensity))
+    """
+    r = min(255, int(idle_base.red + strike_color.red * react_factor * intensity))
+    g = min(255, int(idle_base.green + strike_color.green * react_factor * intensity))
+    b = min(255, int(idle_base.blue + strike_color.blue * react_factor * intensity))
+    return RGBColor(r, g, b)
+
+
 class LightingEngineThread(QThread):
     """
     Dedicated QThread maintaining continuous USB output at 35 FPS,
     RAM buffer mutation, and UI visualizer sync via zero-copy Signal(object).
-    Features persistent background auto-reconnect supervisor and device enumeration handling.
+    Supports 147 LEDs, 39-LED modular numpad (Detached/Left/Right),
+    dual brightness, and anti-burst underglow synchronization.
     """
-    # Zero-copy object signal: emits list of 64 RGB tuples [(r, g, b), ...] for slots 0..63
+    # Emits list of 81 RGB tuples [(r, g, b), ...] for slots 0..80
     frame_rendered = Signal(object)
     underglow_rendered = Signal(object)
     connection_changed = Signal(bool, str)
-    connection_status_changed = Signal(bool, str)  # Backward compatibility alias
-    key_struck = Signal(int)                       # Emits slot index 0..63
+    connection_status_changed = Signal(bool, str)
+    key_struck = Signal(int)
+    key_pressed = Signal(int)  # alias of key_struck for the visualizer flare (slot index)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -113,6 +324,7 @@ class LightingEngineThread(QThread):
         self.frame_interval = 1.0 / self.fps
         self.running = False
         self.lock = threading.Lock()
+        self._reconnect_busy = threading.Lock()
 
         # Matrix mapping reference
         self.matrix = matrix
@@ -122,12 +334,16 @@ class LightingEngineThread(QThread):
         self.kb = None
         self.name_to_index: Dict[str, int] = {}
         self.key_coords: Dict[int, Tuple[float, float]] = {}
+        self.edge_coords: Dict[int, Tuple[float, float]] = {}
         self.idx_to_slot: Dict[int, int] = {}
         self.vk_map: Dict[int, int] = {}
         self.char_map: Dict[str, int] = {}
         self.special_map: Dict[keyboard.Key, int] = {}
-        self.switch_indices: Set[int] = set(SWITCH_INDICES)
-        self.edge_indices: List[int] = list(EDGE_INDICES)
+        self.switch_indices: Set[int] = set(ALL_SWITCH_INDICES)
+        self.edge_indices: List[int] = list(ALL_EDGE_INDICES)
+
+        # Modular Numpad Dock Position: "right", "left", "detached"
+        self._dock_position: str = "right"
 
         # Initialize default geometry even before OpenRGB connects so visualizer works offline
         self._init_default_mappings()
@@ -138,46 +354,92 @@ class LightingEngineThread(QThread):
         self._mode_type = "dual"           # 'single', 'dual', 'rainbow', 'matrix_classic'
         self._color_a = RGBColor(255, 255, 0)   # Primary / Strike Color (Yellow)
         self._color_b = RGBColor(0, 0, 255)     # Secondary / Base Color (Blue)
-        self.void_color = RGBColor(0, 0, 0)    # Matrix Void Base
-        self._brightness = 1.0             # 0.0 to 1.0
-        self.speed = 5.0                  # 1.0 to 10.0 (Wave / Tornado / Breathing)
+        self.void_color = RGBColor(0, 0, 0)
+
+        # Dual Brightness Pipeline (0.0 to 100.0)
+        self._base_brightness: float = 20.0       # Ambient/Idle brightness (%)
+        self._reactive_brightness: float = 100.0  # Keystroke flare/wave peak (%)
+
+        self.speed = 5.0                  # 1.0 to 10.0
         self.matrix_speed = 6.0           # 2.0 to 15.0 rows/s
         self.direction = "right"          # 'right', 'left', 'down', 'up', 'diagonal'
         self.tornado_cw = True
 
-        # Custom Per-Key dictionary (indexed by slot 0..63 AND hardware LED index)
-        self.custom_key_colors: Dict[int, RGBColor] = {
-            k["default_idx"]: RGBColor(0, 120, 215) for k in KEY_DEFINITIONS
-        }
-        self.custom_colors = self.custom_key_colors  # Alias
+        # Custom Per-Key dictionary: maps hardware LED index to painted RGBColor
+        # Keys not present in this dictionary automatically render using base_color
+        self.custom_key_colors: Dict[int, RGBColor] = {}
+        self.custom_colors = self.custom_key_colors
 
         # Dedicated Underglow Settings
         self._underglow_mode = "sync"      # 'sync', 'static', 'off'
         self._underglow_color = RGBColor(0, 120, 215)
-        self._underglow_brightness = 40    # 0 to 100, default 40%
+        self._underglow_brightness = 40    # 0 to 100%
 
         # Static mode dirty-checking flag
         self._static_dirty = True
 
         # Reactive Tuning Parameters
-        self.laser_speed = 60.0           # 15.0 to 120.0 keys/s (default 60.0)
-        self.laser_decay = 0.16           # 0.05 to 0.50s (default 0.16s)
-        self.pulse_width = 2.0            # Beam head width
-        self.punch_decay = 0.35           # 0.10 to 2.50s (default 0.35s)
+        self.laser_speed = 60.0
+        self.laser_decay = 0.16
+        self.pulse_width = 2.0
+        self.punch_decay = 0.35
         self.ripple_speed = 15.0
-        self.ripple_width = 2.4           # Enhanced wave crest width (up from 1.6)
+        self.ripple_width = 2.4
         self.ripple_decay = 0.65
 
         # Reactive State Channels
-        self.active_rows: Dict[int, Tuple[float, float]] = {}  # row -> (origin_x, t0)
-        self.active_ripples: List[Dict[str, float]] = []       # [{'x', 'y', 't0'}]
-        self.active_punches: Dict[int, float] = {}             # led_idx -> t0
+        self.active_rows: Dict[int, Tuple[float, ...]] = {}
+        self.active_ripples: List[Dict[str, float]] = []
+        self.active_punches: Dict[int, float] = {}
 
         # Low-latency background keyboard listener
         self.listener: Optional[keyboard.Listener] = None
         self.last_key_time = time.time()
         self.last_heartbeat = time.time()
         self._last_offline_reconnect = 0.0
+        self._is_connected: bool = False
+
+    @property
+    def dock_position(self) -> str:
+        return self._dock_position
+
+    @dock_position.setter
+    def dock_position(self, val: str):
+        val_clean = val.lower() if isinstance(val, str) else "right"
+        if val_clean not in ("right", "left", "detached"):
+            val_clean = "right"
+        if self._dock_position != val_clean:
+            self._dock_position = val_clean
+            self._update_geometry()
+            self._static_dirty = True
+
+    @property
+    def base_brightness(self) -> float:
+        return self._base_brightness
+
+    @base_brightness.setter
+    def base_brightness(self, val: float):
+        self._base_brightness = max(0.0, min(100.0, float(val)))
+        self._static_dirty = True
+
+    @property
+    def reactive_brightness(self) -> float:
+        return self._reactive_brightness
+
+    @reactive_brightness.setter
+    def reactive_brightness(self, val: float):
+        self._reactive_brightness = max(0.0, min(100.0, float(val)))
+        self._static_dirty = True
+
+    @property
+    def brightness(self) -> float:
+        return self._base_brightness / 100.0
+
+    @brightness.setter
+    def brightness(self, val: float):
+        f_val = float(val)
+        self._base_brightness = f_val * 100.0 if f_val <= 1.0 else f_val
+        self._static_dirty = True
 
     @property
     def effect_name(self) -> str:
@@ -234,15 +496,6 @@ class LightingEngineThread(QThread):
         self.color_a = val
 
     @property
-    def brightness(self) -> float:
-        return self._brightness
-
-    @brightness.setter
-    def brightness(self, val: float):
-        self._brightness = val
-        self._static_dirty = True
-
-    @property
     def underglow_mode(self) -> str:
         return self._underglow_mode
 
@@ -284,9 +537,11 @@ class LightingEngineThread(QThread):
     @property
     def is_connected(self) -> bool:
         with self.lock:
+            if not getattr(self, "_is_connected", False):
+                return False
             if self.kb is None or self.client is None:
                 return False
-            sock = getattr(self.client, "sock", None)
+            sock = _client_socket(self.client)
             if sock is None:
                 return False
             try:
@@ -294,23 +549,55 @@ class LightingEngineThread(QThread):
             except Exception:
                 return False
 
+    @is_connected.setter
+    def is_connected(self, val: bool):
+        with self.lock:
+            self._is_connected = bool(val)
+
     def _init_default_mappings(self):
         """Builds fallback coordinate and key lookup tables prior to OpenRGB connection."""
-        default_names = {k["name"].lower(): k["default_idx"] for k in KEY_DEFINITIONS}
+        default_names = {k["name"].lower(): k["default_idx"] for k in ALL_KEY_DEFINITIONS}
         self.name_to_index = default_names
-        self.key_coords, self.idx_to_slot = build_matrix_coords(self.name_to_index)
+        self.key_coords, self.idx_to_slot = build_matrix_coords(
+            self.name_to_index, dock_position=self._dock_position
+        )
+        self.edge_coords = build_edge_coords(
+            self.name_to_index, dock_position=self._dock_position
+        )
         self.vk_map, self.char_map, self.special_map = build_key_lookups(self.name_to_index)
         self.key_to_index = self.matrix.key_to_index
-        self.ordered_keys = self.matrix.ordered_keys
-        self.KEY_COORDINATES = self.matrix.KEY_COORDINATES
+        self.ordered_keys = self.matrix.ORDERED_KEYS
+        self.index_to_key = INDEX_TO_KEY
+        self.KEY_COORDINATES = build_key_coordinates(self._dock_position)
 
-        # Explicitly collect all unique integer switch indices
-        self.switch_indices = set(idx for idx in self.matrix.key_to_index.values() if idx is not None)
+        if self._dock_position == "detached":
+            self.switch_indices = set(MAIN_SWITCH_INDICES)
+            self.edge_indices = list(MAIN_EDGE_INDICES)
+        else:
+            self.switch_indices = set(ALL_SWITCH_INDICES)
+            self.edge_indices = list(ALL_EDGE_INDICES)
+
         self.switch_indices.add(27)  # Explicit guarantee for Key 3
         assert 27 in self.switch_indices, "Hardware Index 27 missing from switch_indices!"
-
-        self.edge_indices = [i for i in range(147) if i not in self.switch_indices]
         assert 27 not in self.edge_indices, "Hardware Index 27 must not be in edge_indices!"
+
+    def _update_geometry(self):
+        """Updates coordinate mapping and active index sets when dock_position changes."""
+        with self.lock:
+            self.KEY_COORDINATES = build_key_coordinates(self._dock_position)
+            self.key_coords, self.idx_to_slot = build_matrix_coords(
+                self.name_to_index, dock_position=self._dock_position
+            )
+            self.edge_coords = build_edge_coords(
+                self.name_to_index, dock_position=self._dock_position
+            )
+            if self._dock_position == "detached":
+                self.switch_indices = set(MAIN_SWITCH_INDICES)
+                self.edge_indices = list(MAIN_EDGE_INDICES)
+            else:
+                self.switch_indices = set(ALL_SWITCH_INDICES)
+                self.edge_indices = list(ALL_EDGE_INDICES)
+            self.switch_indices.add(27)
 
     def _emit_connection_status(self, connected: bool, message: str):
         self.connection_changed.emit(connected, message)
@@ -318,122 +605,269 @@ class LightingEngineThread(QThread):
 
     def connect(self) -> Tuple[bool, str]:
         """Public manual connect method."""
-        return self.connect_openrgb(silent=False)
+        try:
+            return self.connect_openrgb(silent=False)
+        except Exception as exc:
+            return False, str(exc)
 
-    def connect_openrgb(self, silent: bool = False) -> Tuple[bool, str]:
+    def _close_client(self):
+        """Closes any stale OpenRGB socket and clears device handles."""
+        with self.lock:
+            self._is_connected = False
+            client = self.client
+            self.kb = None
+            self.client = None
+        if client is not None:
+            try:
+                sock = _client_socket(client)
+                if sock is not None:
+                    sock.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _find_everest(client, attempts: int):
+        """Scans the live USB bus for the Everest 60 (>= 147 LEDs). Returns device or None."""
+        for attempt in range(max(1, attempts)):
+            try:
+                client.update_devices()  # Force OpenRGB to scan live USB ports
+            except Exception:
+                pass
+            for d in client.devices:
+                if "everest" in d.name.lower() and len(d.colors) >= EXPECTED_LED_COUNT:
+                    return d
+            if attempt < attempts - 1:
+                time.sleep(2.0)  # Wait for Windows USB drivers to wake up
+        return None
+
+    @staticmethod
+    def _assert_direct_mode(kb):
+        """Explicitly finds and sets Direct Mode. Called once per (re)connect only."""
+        direct_mode = next((m for m in kb.modes if m.name.lower() == "direct"), None)
+        if direct_mode is not None:
+            kb.set_mode(direct_mode)
+        else:
+            kb.set_mode("direct")
+
+    def connect_openrgb(self, silent: bool = False, attempts: int = 6, emit_connected: bool = True) -> Tuple[bool, str]:
         """
-        Connects to OpenRGB SDK Server, handles device discovery race conditions,
-        enforces Direct Mode, and initializes internal matrix lookup tables.
+        Connects to the OpenRGB SDK server at 127.0.0.1:6742, acquires the Everest 60,
+        asserts Direct Mode, flushes a first frame, and ONLY THEN reports CONNECTED.
         """
-        if not check_socket_open():
-            spawn_openrgb_server()
+        self._close_client()
+
+        def _fail(msg: str):
+            self._close_client()
+            self._emit_connection_status(False, MSG_OFFLINE_SIMULATOR)
+            raise ConnectionError(msg)
+
+        if not ensure_openrgb_server():
+            _fail("OpenRGB SDK server is not reachable on 127.0.0.1:6742.")
 
         try:
-            client = OpenRGBClient()
-            if hasattr(client, "sock") and client.sock:
-                client.sock.settimeout(3.0)  # Generous window for 147-LED enumeration
-
-            # Retry querying devices up to 5 times (500ms delay) to handle OpenRGB USB enumeration race
-            kb = None
-            for _ in range(5):
-                try:
-                    if hasattr(client, "update_devices"):
-                        client.update_devices()
-                except Exception:
-                    pass
-                kb = next((d for d in client.devices if "everest" in d.name.lower()), None)
-                if kb:
-                    break
-                time.sleep(0.5)
-
-            if not kb:
-                with self.lock:
-                    self.client = client
-                    self.kb = None
-                msg = "OFFLINE / SIMULATOR"
-                self._emit_connection_status(False, msg)
-                return False, msg
-
-            # Explicit Direct Mode activation
-            direct_mode = next((m for m in kb.modes if m.name.lower() == "direct"), None)
-            if direct_mode:
-                try:
-                    kb.set_mode(direct_mode)
-                except Exception:
-                    pass
-            else:
-                try:
-                    kb.set_mode("direct")
-                except Exception:
-                    pass
-
-            # Once device enumeration and mode configuration are complete,
-            # switch to low-latency timeout for the 35 FPS rendering loop
-            if hasattr(client, "sock") and client.sock:
-                client.sock.settimeout(0.2)
-
-            with self.lock:
-                self.client = client
-                self.kb = kb
-                self.name_to_index = {led.name.lower(): idx for idx, led in enumerate(self.kb.leds)}
-                self.key_coords, self.idx_to_slot = build_matrix_coords(self.name_to_index)
-                self.vk_map, self.char_map, self.special_map = build_key_lookups(self.name_to_index)
-                self.key_to_index = self.matrix.key_to_index
-                self.ordered_keys = self.matrix.ordered_keys
-                self.KEY_COORDINATES = self.matrix.KEY_COORDINATES
-
-                # Explicitly collect all unique integer switch indices
-                self.switch_indices = set(idx for idx in self.matrix.key_to_index.values() if idx is not None)
-                self.switch_indices.add(27)  # Explicit guarantee for Key 3
-                assert 27 in self.switch_indices, "Hardware Index 27 missing from switch_indices!"
-
-                # Dynamically classify EVERY remaining LED as an edge/perimeter diffuser (all 83 LEDs)
-                total_led_count = len(self.kb.colors)
-                self.edge_indices = [i for i in range(total_led_count) if i not in self.switch_indices]
-                assert 27 not in self.edge_indices, "Hardware Index 27 must not be in edge_indices!"
-                print(f"[ENGINE] Detected {len(self.switch_indices)} key switches and {len(self.edge_indices)} perimeter edge diffusers.")
-
-                # Initialize all 147 LEDs cleanly in RAM (pre-fill black) and flush
-                for i in range(total_led_count):
-                    self.kb.colors[i] = RGBColor(0, 0, 0)
-                try:
-                    self.kb.show(fast=True)
-                except Exception:
-                    pass
-
-                self._static_dirty = True
-
-            self._emit_connection_status(True, "CONNECTED")
-            return True, "CONNECTED"
+            client = OpenRGBClient("127.0.0.1", 6742, "Everest Studio Pro")
         except Exception as exc:
-            with self.lock:
+            _fail(f"OpenRGB client handshake failed: {exc}")
+
+        kb = self._find_everest(client, attempts)
+        if kb is None:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+            _fail("Mountain Everest 60 (>=147 LEDs) not found on live USB bus.")
+
+        # FORCE WAKE-UP: Send a dummy packet to clear the USB pipeline before asserting Direct Mode
+        try:
+            kb.set_color(RGBColor(0, 0, 0))
+            kb.show(fast=True)
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+        try:
+            self._assert_direct_mode(kb)
+            time.sleep(0.2)
+
+            name_to_index = {led.name.lower(): idx for idx, led in enumerate(kb.leds)}
+            for i in range(len(kb.colors)):
+                kb.colors[i] = RGBColor(0, 0, 0)
+            kb.show(fast=True)  # First frame must flush cleanly
+        except Exception as exc:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+            _fail(f"Direct Mode / first frame flush failed: {exc}")
+
+        with self.lock:
+            self.client = client
+            self.kb = kb
+            self._is_connected = True
+            self.name_to_index = name_to_index
+            self.key_coords, self.idx_to_slot = build_matrix_coords(
+                self.name_to_index, dock_position=self._dock_position
+            )
+            self.edge_coords = build_edge_coords(
+                self.name_to_index, dock_position=self._dock_position
+            )
+            self.vk_map, self.char_map, self.special_map = build_key_lookups(self.name_to_index)
+            self.key_to_index = self.matrix.key_to_index
+            self.ordered_keys = self.matrix.ORDERED_KEYS
+            self.index_to_key = INDEX_TO_KEY
+            self.KEY_COORDINATES = build_key_coordinates(self._dock_position)
+
+            if self._dock_position == "detached":
+                self.switch_indices = set(MAIN_SWITCH_INDICES)
+                self.edge_indices = list(MAIN_EDGE_INDICES)
+            else:
+                self.switch_indices = set(ALL_SWITCH_INDICES)
+                self.edge_indices = list(ALL_EDGE_INDICES)
+            self.switch_indices.add(27)
+
+            self._static_dirty = True
+
+        if not silent:
+            print(
+                f"[ENGINE] Detected {len(self.switch_indices)} key switches and "
+                f"{len(self.edge_indices)} perimeter edge diffusers."
+            )
+        if emit_connected:
+            self._emit_connection_status(True, MSG_CONNECTED)
+        return True, MSG_CONNECTED
+
+    def _reset_everest_usb(self):
+        """Restarts Mountain Everest 60 USB sub-interfaces (MI_00..MI_02) via pnputil."""
+        if os.name != "nt":
+            return
+        ps_cmd = (
+            "Get-PnpDevice -PresentOnly | "
+            "Where-Object { $_.InstanceId -like 'USB\\VID_3282&PID_0005&MI_*' } | "
+            "ForEach-Object { pnputil /restart-device $_.InstanceId }"
+        )
+        try:
+            is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            is_admin = False
+
+        try:
+            if is_admin:
+                subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    timeout=10,
+                    check=False,
+                )
+            else:
+                ctypes.windll.shell32.ShellExecuteW(
+                    None,
+                    "runas",
+                    "powershell.exe",
+                    f'-NoProfile -WindowStyle Hidden -Command "{ps_cmd}"',
+                    None,
+                    0,
+                )
+                time.sleep(2.0)
+        except Exception as exc:
+            print(f"[ENGINE] Virtual USB reset failed: {exc}")
+
+    def force_hardware_sync(self, reset_usb: bool = True):
+        """
+        Full hardware recovery:
+        1. Mark disconnected & emit connection_changed(False).
+        2. Close stale TCP client socket.
+        3. Kill OpenRGB.exe so MI_02 HID handle is released (sleep 0.4s).
+        4. Optionally virtual-unplug Everest 60 MI_00..MI_02 via pnputil (sleep 1.5s).
+        5. Respawn OpenRGB.exe --server --startminimized (wait up to 8s for port 6742).
+        6. Connect, verify >=147 LEDs, assert Direct Mode once, set _static_dirty=True,
+           and immediately push a full 147-LED base/effect frame via kb.show(fast=True).
+        7. Emit connection_changed(True).
+        """
+        if not self._reconnect_busy.acquire(blocking=False):
+            print("[ENGINE] Sync already in progress.")
+            return
+        try:
+            # Step 1 & 2: Mark disconnected, emit False, and close existing client socket
+            self._close_client()
+            self._emit_connection_status(False, MSG_OFFLINE_SIMULATOR)
+
+            # Step 3: Kill OpenRGB.exe BEFORE pnputil so MI_02 never locks
+            if os.name == "nt":
                 try:
-                    if "client" in locals() and client and hasattr(client, "sock") and client.sock:
-                        client.sock.close()
-                except Exception:
-                    pass
-                self.kb = None
-                self.client = None
-            msg = "OFFLINE / SIMULATOR"
-            self._emit_connection_status(False, msg)
-            return False, f"Connection error: {exc}"
+                    subprocess.run(
+                        ["taskkill", "/F", "/IM", OPENRGB_EXE],
+                        capture_output=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                        timeout=5,
+                        check=False,
+                    )
+                except Exception as exc:
+                    print(f"[ENGINE] taskkill {OPENRGB_EXE} warning: {exc}")
+                time.sleep(0.4)
+
+            # Step 4: Virtual USB reset for MI_00, MI_01, MI_02
+            if reset_usb:
+                self._reset_everest_usb()
+                time.sleep(1.5)
+
+            # Step 5: Respawn OpenRGB daemon cleanly and wait up to 8s for port 6742
+            if not spawn_openrgb_server(wait_seconds=8.0) and not check_socket_open():
+                raise ConnectionError("OpenRGB SDK server failed to start on port 6742 within 8s.")
+
+            # Step 6: Connect, assert Direct Mode once, mark dirty, and flush full 147-LED frame
+            self.connect_openrgb(silent=False, attempts=3, emit_connected=False)
+            self._static_dirty = True
+            self._push_full_frame()
+
+            # Step 7: Emit CONNECTED only if frame push kept connection alive
+            if self.is_connected:
+                self._emit_connection_status(True, MSG_CONNECTED)
+                print("[ENGINE] Force hardware sync complete (USB reset, OpenRGB restarted, Direct Mode + 147-LED frame pushed).")
+        except Exception as exc:
+            print(f"[ENGINE] Force sync failed: {exc}")
+            self._close_client()
+            self._emit_connection_status(False, MSG_OFFLINE_SIMULATOR)
+        finally:
+            self._reconnect_busy.release()
+
+    def _push_full_frame(self):
+        """Immediately flushes a full 147-LED frame (current effect) to the hardware."""
+        self._static_dirty = True
+        now = time.time()
+        if self.effect_name in ("static", "static_color"):
+            self._render_static_frame(now)
+        elif self.effect_name == "custom":
+            self._render_custom_frame(now)
+        else:
+            self._render_loop_step(now)
+        self._static_dirty = False
+
+    def _reconnect_worker(self):
+        """Background hardware (re)connect so the render/visualizer loop never blocks."""
+        if not self._reconnect_busy.acquire(blocking=False):
+            return
+        try:
+            self.connect_openrgb(silent=True, attempts=1)
+        except Exception:
+            pass
+        finally:
+            self._reconnect_busy.release()
 
     def _handle_disconnect(self):
         """Safely cleans up socket and transitions state to simulator/offline."""
-        with self.lock:
-            try:
-                if self.client and hasattr(self.client, "sock") and self.client.sock:
-                    self.client.sock.close()
-            except Exception:
-                pass
-            self.kb = None
-            self.client = None
+        self._close_client()
         self._emit_connection_status(False, MSG_OFFLINE_SIMULATOR)
+
+    def _on_hardware_error(self, exc: Exception, where: str):
+        """Marks hardware offline after a socket error; the visualizer keeps animating."""
+        print(f"[ENGINE] Connection lost in {where} ({exc}). Marking offline; auto-reconnect pending.")
+        self._handle_disconnect()
 
     def _resolve_key(self, key) -> Optional[int]:
         """
         Maps incoming pynput key event to OpenRGB hardware switch index.
-        Guarantees that index 0 or any perimeter underglow index is NEVER returned.
+        Guarantees that index 0 or perimeter underglow indices are NEVER returned.
+        Ignores numpad keys if dock_position is 'detached'.
         """
         try:
             idx = None
@@ -448,13 +882,11 @@ class LightingEngineThread(QThread):
                 else:
                     lower_c = c.lower()
                     lookup = f"key: {lower_c}"
-                    if lookup in self.name_to_index:
-                        idx = self.name_to_index[lookup]
-                    else:
-                        idx = self.name_to_index.get(lookup)
+                    idx = self.name_to_index.get(lookup)
 
-            # Strict perimeter & invalid index elimination
             if idx is None or idx in self.edge_indices or idx not in self.key_coords:
+                return None
+            if self._dock_position == "detached" and idx in NUMPAD_SWITCH_INDICES:
                 return None
             return idx
         except Exception:
@@ -464,16 +896,23 @@ class LightingEngineThread(QThread):
         """Triggers reactive state channels for a given switch LED index."""
         if led_idx is None or led_idx in self.edge_indices or led_idx not in self.key_coords:
             return
+        if self._dock_position == "detached" and led_idx in NUMPAD_SWITCH_INDICES:
+            return
+
         x, y = self.key_coords[led_idx]
-        row = int(round(y))
+        row = int(y)
         now = time.time()
 
         slot = self.idx_to_slot.get(led_idx)
         if slot is not None:
             self.key_struck.emit(slot)
+            self.key_pressed.emit(slot)
 
         with self.lock:
-            self.active_rows[row] = (x, now)
+            # Row-lock state: (origin_x, origin_y, t0). Numpad strikes get their own slot
+            # (row + 100) so they never overwrite a simultaneous strike on the main board row.
+            laser_key = row + 100 if led_idx in NUMPAD_SWITCH_INDICES else row
+            self.active_rows[laser_key] = (x, y, now)
             self.active_punches[led_idx] = now
             self.active_ripples.append({"x": x, "y": y, "t0": now})
             if len(self.active_ripples) > 4:
@@ -482,56 +921,47 @@ class LightingEngineThread(QThread):
     def _is_reactive_trigger(self, key) -> bool:
         """
         Determines whether an incoming key event is a genuine keystroke that should
-        trigger reactive effects (Ripple, Laser, Punch), filtering out phantom background
-        polling, OS telemetry, mouse driver queries, and standalone modifier presses.
+        trigger reactive effects, with fast O(1) VK bypass for zero typing lag.
         """
-        # 1. Filter Modifier VK Codes
-        # 16=Shift, 17=Ctrl, 18=Alt, 20=CapsLock, 91=LWin, 92=RWin, 93=Apps/Menu
-        # 160=LShift, 161=RShift, 162=LCtrl, 163=RCtrl, 164=LAlt, 165=RAlt
-        # 229=IME process / composition key
-        MODIFIER_VKS = {16, 17, 18, 20, 91, 92, 93, 160, 161, 162, 163, 164, 165, 229}
-        if hasattr(key, "vk") and key.vk is not None:
-            if key.vk in MODIFIER_VKS:
+        try:
+            # Fast O(1) bypass for Whitelisted Numpad Virtual Key Codes
+            if hasattr(key, "vk") and key.vk in NUMPAD_VKS:
+                return True
+
+            # 1. Filter Modifier VK Codes
+            MODIFIER_VKS = {16, 17, 18, 20, 91, 92, 93, 160, 161, 162, 163, 164, 165, 229}
+            if hasattr(key, "vk") and key.vk is not None and key.vk in MODIFIER_VKS:
                 return False
 
-        # 2. Filter Modifier Names
-        modifier_names = {
-            "shift", "shift_l", "shift_r",
-            "ctrl", "ctrl_l", "ctrl_r",
-            "alt", "alt_l", "alt_r", "alt_gr",
-            "caps_lock",
-            "cmd", "cmd_l", "cmd_r",
-            "menu"
-        }
-        key_name = getattr(key, "name", None)
-        if key_name in modifier_names:
-            return False
+            # 2. Filter Modifier Names
+            modifier_names = {
+                "shift", "shift_l", "shift_r",
+                "ctrl", "ctrl_l", "ctrl_r",
+                "alt", "alt_l", "alt_r", "alt_gr",
+                "caps_lock", "cmd", "cmd_l", "cmd_r", "menu"
+            }
+            key_name = getattr(key, "name", None)
+            if key_name in modifier_names:
+                return False
 
-        # 3. Printable Characters (Strict check: must be non-empty printable string)
-        if hasattr(key, "char") and key.char is not None:
-            if isinstance(key.char, str) and key.char.isprintable() and len(key.char) > 0:
+            # 3. Printable Characters
+            if hasattr(key, "char") and key.char is not None:
+                if isinstance(key.char, str) and key.char.isprintable() and len(key.char) > 0:
+                    return True
+                return False
+
+            # 4. Whitelisted Functional Typing Keys
+            functional_names = {
+                "space", "enter", "backspace", "tab", "delete",
+                "up", "down", "left", "right", "esc"
+            }
+            if key_name in functional_names:
                 return True
-            return False
 
-        # 4. Whitelisted Functional Typing Keys
-        functional_names = {
-            "space", "enter", "backspace", "tab", "delete",
-            "up", "down", "left", "right", "esc"
-        }
-        if key_name in functional_names:
-            return True
-
-        try:
             functional_keys = {
-                keyboard.Key.space,
-                keyboard.Key.enter,
-                keyboard.Key.backspace,
-                keyboard.Key.tab,
-                keyboard.Key.delete,
-                keyboard.Key.up,
-                keyboard.Key.down,
-                keyboard.Key.left,
-                keyboard.Key.right,
+                keyboard.Key.space, keyboard.Key.enter, keyboard.Key.backspace,
+                keyboard.Key.tab, keyboard.Key.delete, keyboard.Key.up,
+                keyboard.Key.down, keyboard.Key.left, keyboard.Key.right,
                 keyboard.Key.esc,
             }
             if key in functional_keys:
@@ -542,7 +972,7 @@ class LightingEngineThread(QThread):
         return False
 
     def _on_press(self, key):
-        """Zero-latency keystroke callback with phantom modifier filtering."""
+        """Zero-latency keystroke callback with instant try/except error suppression."""
         try:
             self.last_key_time = time.time()
             if not self._is_reactive_trigger(key):
@@ -563,29 +993,64 @@ class LightingEngineThread(QThread):
         self.listener = keyboard.Listener(on_press=self._on_press)
         self.listener.start()
 
-    def set_custom_key_color(self, slot_or_idx: int, color: RGBColor):
-        """Updates custom per-key color by slot (0..63) or hardware LED index."""
-        with self.lock:
-            if 0 <= slot_or_idx < len(KEY_DEFINITIONS):
-                k = KEY_DEFINITIONS[slot_or_idx]
-                led_idx = k.get("resolved_idx", k["default_idx"])
+    def _resolve_switch_led_idx(self, key_ref) -> Optional[int]:
+        """Resolves hardware LED index, slot index (0..80), or key name string to switch LED index."""
+        if isinstance(key_ref, int):
+            if key_ref in self.switch_indices or key_ref in self.key_coords:
+                return key_ref
+            if 0 <= key_ref < len(ALL_KEY_DEFINITIONS):
+                k = ALL_KEY_DEFINITIONS[key_ref]
+                return k.get("resolved_idx", k["default_idx"])
+            return key_ref
+        if isinstance(key_ref, str):
+            clean_name = key_ref.lower()
+            if clean_name in self.name_to_index:
+                return self.name_to_index[clean_name]
+            for k in ALL_KEY_DEFINITIONS:
+                if k["id"].lower() == clean_name or k["name"].lower() == clean_name:
+                    return k.get("resolved_idx", k["default_idx"])
+        return None
+
+    def paint_custom_key(self, key_ref, color: RGBColor):
+        """Paints a single switch with the custom color."""
+        led_idx = self._resolve_switch_led_idx(key_ref)
+        if led_idx is not None:
+            with self.lock:
                 self.custom_key_colors[led_idx] = color
-                self.custom_key_colors[k["default_idx"]] = color
-            else:
-                self.custom_key_colors[slot_or_idx] = color
+                self._static_dirty = True
+
+    def erase_custom_key(self, key_ref):
+        """Erases custom color from switch, reverting it to base color."""
+        led_idx = self._resolve_switch_led_idx(key_ref)
+        if led_idx is not None:
+            with self.lock:
+                self.custom_key_colors.pop(led_idx, None)
+                self._static_dirty = True
+
+    def clear_custom_keys(self):
+        """Clears all painted custom keys, reverting every key to base color."""
+        with self.lock:
+            self.custom_key_colors.clear()
+            self._static_dirty = True
 
     def fill_all_custom_keys(self, color: RGBColor):
-        """Fills all 64 switches with the given color in Custom Per-Key mode."""
+        """Fills all switches with the given paint color in Custom Per-Key mode."""
         with self.lock:
-            for k in KEY_DEFINITIONS:
-                led_idx = k.get("resolved_idx", k["default_idx"])
-                self.custom_key_colors[led_idx] = color
-                self.custom_key_colors[k["default_idx"]] = color
+            for k in ALL_KEY_DEFINITIONS:
+                idx = k.get("resolved_idx", k["default_idx"])
+                self.custom_key_colors[idx] = color
+            self._static_dirty = True
+
+    def set_custom_key_color(self, slot_or_idx: int, color: RGBColor):
+        """Backwards-compatibility alias for paint_custom_key."""
+        self.paint_custom_key(slot_or_idx, color)
 
     def run(self):
         """Main QThread execution loop running at fixed 35 FPS on a single hardware-synchronized thread."""
         self.running = True
-        self.connect_openrgb()
+        # Hardware connect runs in the background: the render loop and on-screen visualizer
+        # must start immediately and keep animating even if USB/OpenRGB is unavailable.
+        threading.Thread(target=self._reconnect_worker, daemon=True).start()
         self._start_listener()
 
         watchdog_check_time = time.time()
@@ -594,31 +1059,37 @@ class LightingEngineThread(QThread):
             t_start = time.time()
             now = t_start
 
-            # Watchdog check for keyboard hook health every 2 seconds
             if now - watchdog_check_time > 2.0:
                 if not self.listener or not self.listener.is_alive():
                     self._start_listener()
                 watchdog_check_time = now
 
-            # If offline / simulator, attempt reconnection every 5s from the render thread
             if self.kb is None and (now - self._last_offline_reconnect > 5.0):
                 self._last_offline_reconnect = now
-                try:
-                    self.connect_openrgb(silent=True)
-                except Exception:
-                    pass
+                threading.Thread(target=self._reconnect_worker, daemon=True).start()
 
-            if self.effect_name in ("static", "static_color"):
-                if self._static_dirty:
-                    self._render_static_frame(now)
-                    self._static_dirty = False
-                else:
-                    time.sleep(0.05)
-                continue
+            try:
+                if self.effect_name in ("static", "static_color"):
+                    if self._static_dirty:
+                        self._render_static_frame(now)
+                        self._static_dirty = False
+                    else:
+                        time.sleep(0.05)
+                    continue
 
-            self._render_loop_step(now)
+                if self.effect_name == "custom":
+                    if self._static_dirty:
+                        self._render_custom_frame(now)
+                        self._static_dirty = False
+                    else:
+                        time.sleep(0.05)
+                    continue
 
-            # High-precision 35 FPS frame pacing
+                self._render_loop_step(now)
+            except Exception as e:
+                print(f"[ENGINE CRASH PREVENTED] {e}")
+                traceback.print_exc()
+
             elapsed = time.time() - t_start
             sleep_time = max(0.001, self.frame_interval - elapsed)
             time.sleep(sleep_time)
@@ -626,97 +1097,164 @@ class LightingEngineThread(QThread):
     def _render_static_frame(self, now: float):
         """
         Renders and flushes a single static frame to hardware and visualizer.
-        Writes static color directly to all switch indices using self.switch_indices
-        and drives all edge diffusers according to the underglow mode.
+        Writes static color directly to switch indices and drives diffusers.
+        Forces numpad LEDs to black when detached.
         """
         assert 27 in self.switch_indices, "Hardware Index 27 missing from switch_indices!"
         assert self.matrix.key_to_index.get('3') == 27, "Key 3 is not mapped to index 27!"
 
-        b_val = self.brightness if self.brightness <= 1.0 else self.brightness / 100.0
-        b_factor = max(0.0, min(1.0, b_val))
-        target_color = RGBColor(
-            int(self.color_a.red * b_factor),
-            int(self.color_a.green * b_factor),
-            int(self.color_a.blue * b_factor)
-        )
-        edge_factor = max(0.0, min(1.0, self.underglow_brightness / 100.0))
+        b_factor = max(0.0, min(1.0, self.base_brightness / 100.0))
+        target_color = scale_brightness(self.color_a, b_factor)
+        static_tuple = (target_color.red, target_color.green, target_color.blue)
 
+        edge_factor = max(0.0, min(1.0, self.underglow_brightness / 100.0))
         if self.underglow_brightness == 0 or self.underglow_mode == "off":
             edge_c = RGBColor(0, 0, 0)
         elif self.underglow_mode == "static":
-            edge_c = RGBColor(
-                int(self.underglow_color.red * edge_factor),
-                int(self.underglow_color.green * edge_factor),
-                int(self.underglow_color.blue * edge_factor),
-            )
+            edge_c = scale_brightness(self.underglow_color, edge_factor)
         elif self.underglow_mode == "sync":
-            edge_c = RGBColor(
-                int(self.color_a.red * edge_factor),
-                int(self.color_a.green * edge_factor),
-                int(self.color_a.blue * edge_factor),
-            )
+            edge_c = scale_brightness(self.color_a, edge_factor)
         else:
             edge_c = RGBColor(0, 0, 0)
 
-        # In Static mode: all 64 items must equal the active static color
-        static_tuple = (target_color.red, target_color.green, target_color.blue)
-        frame_colors: List[Tuple[int, int, int]] = [static_tuple] * 64
+        # 81 switch items for visualizer (slots 64..80 black when detached)
+        if self._dock_position == "detached":
+            frame_colors: List[Tuple[int, int, int]] = [static_tuple] * 64 + [(0, 0, 0)] * 17
+        else:
+            frame_colors = [static_tuple] * 81
 
         with self.lock:
             if self.kb and hasattr(self.kb, "colors"):
                 num_hw_leds = len(self.kb.colors)
-                # Ensure edge indices are isolated from switches
-                self.edge_indices = [i for i in range(num_hw_leds) if i not in self.switch_indices]
-                assert 27 not in self.edge_indices, "Hardware Index 27 must not be in edge_indices!"
-
                 for i in range(num_hw_leds):
                     self.kb.colors[i] = RGBColor(0, 0, 0)
 
-                # Write target_color directly to all switch indices
                 for idx in self.switch_indices:
                     if idx < num_hw_leds:
                         self.kb.colors[idx] = target_color
 
-                # Explicitly verify Key 3 (Index 27) received target_color
-                if num_hw_leds > 27:
-                    assert self.kb.colors[27] == target_color, f"Key 3 (index 27) failed assertion! Got {self.kb.colors[27]}"
-
-                # Underglow Isolation: Key 3 is never overwritten by underglow logic
                 for idx in self.edge_indices:
                     if idx < num_hw_leds:
                         self.kb.colors[idx] = edge_c
 
-                print("[MATRIX] Key 3 (Index 27) successfully written.")
+                if self._dock_position == "detached":
+                    for idx in NUMPAD_SWITCH_INDICES:
+                        if idx < num_hw_leds:
+                            self.kb.colors[idx] = RGBColor(0, 0, 0)
+                    for idx in NUMPAD_EDGE_INDICES:
+                        if idx < num_hw_leds:
+                            self.kb.colors[idx] = RGBColor(0, 0, 0)
+
+                if num_hw_leds > 27:
+                    self.kb.colors[27] = target_color
 
                 try:
                     self.kb.show(fast=True)
                     self.last_heartbeat = now
-                except (BrokenPipeError, ConnectionResetError, OSError) as exc:
-                    print(f"[ENGINE] Connection lost in static frame ({exc}). Reconnecting...")
-                    self._handle_disconnect()
-                    try:
-                        self.connect_openrgb(silent=True)
-                    except Exception:
-                        pass
+                except OSError as exc:
+                    self._on_hardware_error(exc, "static frame")
                 except Exception as e:
-                    print(f"[ENGINE] Static hardware show error: {e}")
+                    self._on_hardware_error(e, "Static hardware show")
 
-        assert len(frame_colors) == 64, f"frame_colors must be 64 items, got {len(frame_colors)}"
-        # Ensure slot 3 (Key 3) receives the active yellow RGB tuple
         frame_colors[3] = static_tuple
         self.frame_rendered.emit(frame_colors)
         self.underglow_rendered.emit((edge_c.red, edge_c.green, edge_c.blue))
 
-    def _render_loop_step(self, now: float):
-        """Computes a single 35 FPS frame for all 64 switches and 44 edge LEDs."""
+    def _render_custom_frame(self, now: float):
+        """
+        Renders and flushes a single Custom Per-Key frame to hardware and visualizer.
+        Unpainted switches render base_color scaled by base_brightness.
+        Painted switches render custom color scaled by reactive_brightness.
+        Detached modular numpad LEDs are strictly blacked out.
+        """
         assert 27 in self.switch_indices, "Hardware Index 27 missing from switch_indices!"
         assert self.matrix.key_to_index.get('3') == 27, "Key 3 is not mapped to index 27!"
-        assert 27 not in self.edge_indices, "Hardware Index 27 must not be in edge_indices!"
+
+        base_factor = max(0.0, min(1.0, self.base_brightness / 100.0))
+        react_factor = max(0.0, min(1.0, self.reactive_brightness / 100.0))
+        idle_base = scale_brightness(self.color_b, base_factor)
+        idle_tuple = (idle_base.red, idle_base.green, idle_base.blue)
+
+        edge_factor = max(0.0, min(1.0, self.underglow_brightness / 100.0))
+        if self.underglow_brightness == 0 or self.underglow_mode == "off":
+            edge_c = RGBColor(0, 0, 0)
+        elif self.underglow_mode == "static":
+            edge_c = scale_brightness(self.underglow_color, edge_factor)
+        elif self.underglow_mode == "sync":
+            edge_c = scale_brightness(self.color_a, edge_factor * base_factor)
+        else:
+            edge_c = RGBColor(0, 0, 0)
 
         with self.lock:
-            max_laser_life = (15.0 / max(10.0, self.laser_speed)) + self.laser_decay
+            custom_snap = dict(self.custom_key_colors)
+
+        frame_colors: List[Tuple[int, int, int]] = [idle_tuple] * 81
+        for slot_idx, k in enumerate(KEY_DEFINITIONS):
+            led_idx = k.get("resolved_idx", k["default_idx"])
+            if led_idx in custom_snap:
+                c = scale_brightness(custom_snap[led_idx], react_factor)
+                frame_colors[slot_idx] = (c.red, c.green, c.blue)
+
+        if self._dock_position != "detached":
+            for num_offset, k in enumerate(NUMPAD_KEY_DEFINITIONS):
+                slot_idx = 64 + num_offset
+                led_idx = k.get("resolved_idx", k["default_idx"])
+                if led_idx in custom_snap:
+                    c = scale_brightness(custom_snap[led_idx], react_factor)
+                    frame_colors[slot_idx] = (c.red, c.green, c.blue)
+        else:
+            for slot_idx in range(64, 81):
+                frame_colors[slot_idx] = (0, 0, 0)
+
+        with self.lock:
+            if self.kb and hasattr(self.kb, "colors"):
+                num_hw_leds = len(self.kb.colors)
+                for i in range(num_hw_leds):
+                    self.kb.colors[i] = RGBColor(0, 0, 0)
+
+                for idx in self.switch_indices:
+                    if idx < num_hw_leds:
+                        if idx in custom_snap:
+                            self.kb.colors[idx] = scale_brightness(custom_snap[idx], react_factor)
+                        else:
+                            self.kb.colors[idx] = idle_base
+
+                for idx in self.edge_indices:
+                    if idx < num_hw_leds:
+                        self.kb.colors[idx] = edge_c
+
+                if self._dock_position == "detached":
+                    for idx in NUMPAD_SWITCH_INDICES:
+                        if idx < num_hw_leds:
+                            self.kb.colors[idx] = RGBColor(0, 0, 0)
+                    for idx in NUMPAD_EDGE_INDICES:
+                        if idx < num_hw_leds:
+                            self.kb.colors[idx] = RGBColor(0, 0, 0)
+
+                if num_hw_leds > 27:
+                    k3_c = frame_colors[3]
+                    self.kb.colors[27] = RGBColor(k3_c[0], k3_c[1], k3_c[2])
+
+                try:
+                    self.kb.show(fast=True)
+                    self.last_heartbeat = now
+                except OSError as exc:
+                    self._on_hardware_error(exc, "custom frame")
+                except Exception as e:
+                    self._on_hardware_error(e, "Custom hardware show")
+
+        self.frame_rendered.emit(frame_colors)
+        self.underglow_rendered.emit((edge_c.red, edge_c.green, edge_c.blue))
+
+    def _render_loop_step(self, now: float):
+        """Computes a single 35 FPS frame for switches and edge diffusers."""
+        assert 27 in self.switch_indices, "Hardware Index 27 missing from switch_indices!"
+        assert self.matrix.key_to_index.get('3') == 27, "Key 3 is not mapped to index 27!"
+
+        with self.lock:
+            max_laser_life = (30.0 / max(3.0, self.laser_speed)) + self.laser_decay
             self.active_rows = {
-                r: v for r, v in self.active_rows.items() if (now - v[1]) < max_laser_life
+                r: v for r, v in self.active_rows.items() if (now - v[-1]) < max_laser_life
             }
             self.active_punches = {
                 k: t for k, t in self.active_punches.items() if (now - t) < self.punch_decay
@@ -730,87 +1268,78 @@ class LightingEngineThread(QThread):
             ripples_snap = list(self.active_ripples)
             custom_snap = dict(self.custom_key_colors)
 
-        # Lightweight list of 64 RGB tuples [(r, g, b), ...] strictly for switches 0..63
-        frame_colors: List[Tuple[int, int, int]] = [(0, 0, 0)] * 64
-
+        frame_colors: List[Tuple[int, int, int]] = [(0, 0, 0)] * 81
         kb_colors = self.kb.colors if (self.kb and hasattr(self.kb, "colors")) else None
         num_hw_leds = len(kb_colors) if kb_colors is not None else 0
 
-        # Step 1: Pre-fill entire 147-LED buffer with black
         if kb_colors is not None:
             for i in range(num_hw_leds):
                 kb_colors[i] = RGBColor(0, 0, 0)
 
-        # Step 2: Render switches ONLY (64 keys)
-        if self.effect_name == "static":
-            b_factor = max(0.0, min(1.0, self.brightness))
-            static_c = RGBColor(
-                int(self.color_a.red * b_factor),
-                int(self.color_a.green * b_factor),
-                int(self.color_a.blue * b_factor),
-            )
-            static_tuple = (static_c.red, static_c.green, static_c.blue)
-            frame_colors = [static_tuple] * 64
-            if kb_colors is not None:
-                for k in KEY_DEFINITIONS:
-                    led_idx = k.get("resolved_idx", k["default_idx"])
-                    if led_idx < num_hw_leds:
-                        kb_colors[led_idx] = static_c
-        else:
-            for slot_idx, k in enumerate(KEY_DEFINITIONS):
-                led_idx = k.get("resolved_idx", k["default_idx"])
-                kx, ky = self.key_coords.get(led_idx, (k["x"] + k["w"] / 2.0, k["y"]))
-
+        # Step 1: Render main 64 switches
+        for slot_idx, k in enumerate(KEY_DEFINITIONS):
+            led_idx = k.get("resolved_idx", k["default_idx"])
+            kx, ky = self.key_coords.get(led_idx, (k["x"] + k["w"] / 2.0, k["y"]))
+            try:
                 c = self._compute_key_color(
                     led_idx, kx, ky, now, rows_snap, punches_snap, ripples_snap, custom_snap
                 )
-                frame_colors[slot_idx] = (c.red, c.green, c.blue)
+            except Exception as e:
+                print(f"[ENGINE CRASH PREVENTED] {e}")
+                traceback.print_exc()
+                c = RGBColor(0, 0, 0)
+            frame_colors[slot_idx] = (c.red, c.green, c.blue)
+            if kb_colors is not None and led_idx < num_hw_leds:
+                kb_colors[led_idx] = c
 
+        # Step 2: Render 17 modular numpad switches if attached
+        if self._dock_position != "detached":
+            for num_offset, k in enumerate(NUMPAD_KEY_DEFINITIONS):
+                slot_idx = 64 + num_offset
+                led_idx = k.get("resolved_idx", k["default_idx"])
+                kx, ky = self.key_coords.get(led_idx, (k.get("rel_x", 0.0) + 15.5, k["y"]))
+                try:
+                    c = self._compute_key_color(
+                        led_idx, kx, ky, now, rows_snap, punches_snap, ripples_snap, custom_snap
+                    )
+                except Exception as e:
+                    print(f"[ENGINE CRASH PREVENTED] {e}")
+                    traceback.print_exc()
+                    c = RGBColor(0, 0, 0)
+                frame_colors[slot_idx] = (c.red, c.green, c.blue)
                 if kb_colors is not None and led_idx < num_hw_leds:
                     kb_colors[led_idx] = c
+        elif kb_colors is not None:
+            for idx in NUMPAD_SWITCH_INDICES:
+                if idx < num_hw_leds:
+                    kb_colors[idx] = RGBColor(0, 0, 0)
 
-        # Hard-wire guarantee: Ensure self.kb.colors[27] (Key 3) receives the active key color on every frame
+        # Hard-wire guarantees for Key 3 (Index 27) and Spacebar (Index 112)
         if kb_colors is not None and num_hw_leds > 27:
             k3_c = frame_colors[3]
             kb_colors[27] = RGBColor(k3_c[0], k3_c[1], k3_c[2])
-
-        # Hard-wire guarantee: Ensure self.kb.colors[112] (Spacebar) receives active key color on every frame
         if kb_colors is not None and num_hw_leds > 112:
             sp_c = frame_colors[58]
             kb_colors[112] = RGBColor(sp_c[0], sp_c[1], sp_c[2])
 
-        # Step 3: Absolute Final Pass — All 83 Edge Diffusers
-        edge_factor = max(0.0, min(1.0, self.underglow_brightness / 100.0))
-
+        # Step 3: Edge Diffusers Pass with Anti-Burst Dampening
+        last_edge_c = RGBColor(0, 0, 0)
         for idx in self.edge_indices:
-            if self.underglow_brightness == 0 or self.underglow_mode == "off" or self.effect_name == "off":
+            try:
+                edge_c = self._compute_edge_color(idx, now, rows_snap, punches_snap, ripples_snap)
+            except Exception as e:
+                print(f"[ENGINE CRASH PREVENTED] {e}")
+                traceback.print_exc()
                 edge_c = RGBColor(0, 0, 0)
-            elif self.underglow_mode == "static":
-                edge_c = RGBColor(
-                    int(self.underglow_color.red * edge_factor),
-                    int(self.underglow_color.green * edge_factor),
-                    int(self.underglow_color.blue * edge_factor),
-                )
-            elif self.underglow_mode == "sync":
-                if self.effect_name in ("punch", "laser", "ripple"):
-                    ambient_base = self.base_color
-                    edge_c = RGBColor(
-                        int(ambient_base.red * edge_factor),
-                        int(ambient_base.green * edge_factor),
-                        int(ambient_base.blue * edge_factor),
-                    )
-                else:
-                    raw_c = self._compute_underglow_color(now, rows_snap, punches_snap, ripples_snap)
-                    edge_c = RGBColor(
-                        int(raw_c.red * edge_factor),
-                        int(raw_c.green * edge_factor),
-                        int(raw_c.blue * edge_factor),
-                    )
-            else:
-                edge_c = RGBColor(0, 0, 0)
-
+            last_edge_c = edge_c
             if kb_colors is not None and idx < num_hw_leds:
                 kb_colors[idx] = edge_c
+
+        # Strictly zero out numpad diffusers if detached
+        if self._dock_position == "detached" and kb_colors is not None:
+            for idx in NUMPAD_EDGE_INDICES:
+                if idx < num_hw_leds:
+                    kb_colors[idx] = RGBColor(0, 0, 0)
 
         # Step 4: Flush single USB report
         if kb_colors is not None:
@@ -819,20 +1348,13 @@ class LightingEngineThread(QThread):
                     if self.kb:
                         self.kb.show(fast=True)
                 self.last_heartbeat = now
-            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
-                print(f"[ENGINE] Connection lost in render loop ({exc}). Reconnecting...")
-                self._handle_disconnect()
-                try:
-                    self.connect_openrgb(silent=True)
-                except Exception:
-                    pass
+            except OSError as exc:
+                self._on_hardware_error(exc, "render loop")
             except Exception as e:
-                print(f"[ENGINE] Hardware show error: {e}")
+                self._on_hardware_error(e, "Hardware show")
 
-        # 3. Emit zero-copy list of 64 RGB tuples via Signal(object) to UI visualizer
-        assert len(frame_colors) == 64, f"frame_colors must be 64 items, got {len(frame_colors)}"
         self.frame_rendered.emit(frame_colors)
-        self.underglow_rendered.emit((edge_c.red, edge_c.green, edge_c.blue))
+        self.underglow_rendered.emit((last_edge_c.red, last_edge_c.green, last_edge_c.blue))
 
     _render_loop = _render_loop_step
 
@@ -842,121 +1364,151 @@ class LightingEngineThread(QThread):
         x: float,
         y: float,
         now: float,
-        rows_snap: Dict[int, Tuple[float, float]],
+        rows_snap: Dict[int, Tuple[float, ...]],
         punches_snap: Dict[int, float],
         ripples_snap: List[Dict[str, float]],
         custom_snap: Dict[int, RGBColor],
     ) -> RGBColor:
-        """Evaluates active mathematical effect for switch at (x, y)."""
+        """Evaluates active effect for a switch with independent dual brightness blending."""
         eff = self.effect_name
+        base_factor = max(0.0, min(1.0, self.base_brightness / 100.0))
+        react_factor = max(0.0, min(1.0, self.reactive_brightness / 100.0))
 
         if eff == "static":
-            return self.renderer.render_static(self.color_a, self.brightness)
+            return scale_brightness(self.color_a, base_factor)
 
         if eff == "wave":
             return self.renderer.render_color_wave(
                 x, y, now, self.direction, self.speed, self.mode_type,
-                self.color_a, self.color_b, self.brightness
+                self.color_a, self.color_b, base_factor
             )
 
         if eff == "tornado":
             return self.renderer.render_tornado(
                 x, y, now, self.tornado_cw, self.speed, self.mode_type,
-                self.color_a, self.color_b, self.brightness
+                self.color_a, self.color_b, base_factor
             )
 
         if eff == "breathing":
             return self.renderer.render_breathing(
                 now, self.speed, self.mode_type,
-                self.color_a, self.color_b, self.brightness
+                self.color_a, self.color_b, base_factor
             )
 
         if eff == "laser":
-            return self.renderer.render_laser(
-                x, y, now, rows_snap, self.laser_speed,
-                self.pulse_width, self.laser_decay, self.mode_type,
-                self.color_a, self.color_b, self.brightness
-            )
+            try:
+                idle_base = RGBColor(0, 0, 0) if self.mode_type == "single" else scale_brightness(self.color_b, base_factor)
+                intensity = calculate_laser_intensity(x, y, now, rows_snap, self.laser_speed, self.laser_decay, self.pulse_width)
+                return blend_reactive(idle_base, self.color_a, react_factor, intensity)
+            except Exception as e:
+                print(f"[ENGINE CRASH PREVENTED] {e}")
+                traceback.print_exc()
+                return scale_brightness(self.color_b, base_factor) if self.mode_type != "single" else RGBColor(0, 0, 0)
 
         if eff == "matrix":
             return self.renderer.render_matrix_rain(
                 x, y, now, self.matrix_speed, self.mode_type,
-                self.color_a, self.color_b, self.void_color, self.brightness
+                self.color_a, self.color_b, self.void_color, base_factor
             )
 
         if eff == "ripple":
-            return self.renderer.render_ripple(
-                x, y, now, ripples_snap, self.ripple_speed,
-                self.ripple_width, self.ripple_decay, self.mode_type,
-                self.color_a, self.color_b, self.brightness
-            )
+            idle_base = RGBColor(0, 0, 0) if self.mode_type == "single" else scale_brightness(self.color_b, base_factor)
+            intensity = calculate_ripple_intensity(x, y, now, ripples_snap, self.ripple_speed, self.ripple_decay)
+            return blend_reactive(idle_base, self.color_a, react_factor, intensity)
 
         if eff == "punch":
-            return self.renderer.render_punch(
-                idx, now, punches_snap, self.punch_decay, self.mode_type,
-                self.color_a, self.color_b, self.brightness
-            )
+            idle_base = RGBColor(0, 0, 0) if self.mode_type == "single" else scale_brightness(self.color_b, base_factor)
+            intensity = calculate_punch_intensity(idx, now, punches_snap, self.punch_decay)
+            return blend_reactive(idle_base, self.color_a, react_factor, intensity)
 
         if eff == "custom":
-            return self.renderer.render_custom_key(
-                idx, custom_snap, self.color_a, self.brightness
-            )
+            if idx in custom_snap:
+                return scale_brightness(custom_snap[idx], react_factor)
+            return scale_brightness(self.color_b, base_factor)
 
         return self.renderer.render_off()
 
-    def _compute_underglow_color(
+    def _compute_edge_color(
         self,
+        idx: int,
         now: float,
-        rows_snap: Dict[int, Tuple[float, float]],
+        rows_snap: Dict[int, Tuple[float, ...]],
         punches_snap: Dict[int, float],
         ripples_snap: List[Dict[str, float]],
     ) -> RGBColor:
         """
-        Determines unscaled base color for all 44 perimeter underglow LEDs.
-        Master keyboard brightness affects only switches; underglow is scaled
-        independently by self.underglow_brightness.
+        Anti-Burst Underglow Sync:
+        Calculates distance from reactive wave origin to edge diffuser coordinates.
+        Applies strict 0.4 dampening multiplier to wave_intensity on perimeter diffusers;
+        scales by underglow_brightness. Preserves total black when underglow_brightness == 0.
         """
-        if self.underglow_mode == "off" or self.effect_name == "off":
+        if self.underglow_brightness == 0 or self.underglow_mode == "off" or self.effect_name == "off":
             return RGBColor(0, 0, 0)
 
-        if self.underglow_mode == "static":
-            return self.underglow_color
+        edge_ug_factor = max(0.0, min(1.0, self.underglow_brightness / 100.0))
 
-        # 'sync' mode: smoothly inherits active effect without erratic averaging
+        if self.underglow_mode == "static":
+            return scale_brightness(self.underglow_color, edge_ug_factor)
+
+        # Mode is "sync"
         eff = self.effect_name
+        ex, ey = self.edge_coords.get(idx, (7.5, 2.0))
+        base_factor = max(0.0, min(1.0, self.base_brightness / 100.0))
+        react_factor = max(0.0, min(1.0, self.reactive_brightness / 100.0))
+
+        if eff in ("ripple", "laser", "punch"):
+            try:
+                if eff == "ripple":
+                    wave_intensity = calculate_ripple_intensity(
+                        ex, ey, now, ripples_snap, self.ripple_speed, self.ripple_decay
+                    )
+                elif eff == "laser":
+                    wave_intensity = calculate_laser_intensity(
+                        ex, ey, now, rows_snap, self.laser_speed, self.laser_decay, self.pulse_width
+                    )
+                else:
+                    wave_intensity = calculate_punch_edge_intensity(
+                        ex, ey, now, punches_snap, self.punch_decay, self.key_coords
+                    )
+            except Exception as e:
+                print(f"[ENGINE CRASH PREVENTED] {e}")
+                traceback.print_exc()
+                wave_intensity = 0.0
+
+            ambient_base = scale_brightness(
+                self.color_b if self.mode_type != "single" else RGBColor(0, 0, 0),
+                edge_ug_factor * base_factor
+            )
+            dampened_intensity = wave_intensity * 0.4 * edge_ug_factor * react_factor
+            return blend_reactive(ambient_base, self.color_a, 1.0, dampened_intensity)
+
         if eff in ("static", "custom"):
-            return self.color_a
+            return scale_brightness(self.color_a, edge_ug_factor * base_factor)
 
         if eff == "wave":
             return self.renderer.render_color_wave(
-                7.25, 2.0, now, self.direction, self.speed, self.mode_type,
-                self.color_a, self.color_b, 1.0
+                ex, ey, now, self.direction, self.speed, self.mode_type,
+                self.color_a, self.color_b, edge_ug_factor * base_factor
             )
 
         if eff == "tornado":
             return self.renderer.render_tornado(
-                0.0, 0.0, now, self.tornado_cw, self.speed, self.mode_type,
-                self.color_a, self.color_b, 1.0
+                ex, ey, now, self.tornado_cw, self.speed, self.mode_type,
+                self.color_a, self.color_b, edge_ug_factor * base_factor
             )
 
         if eff == "breathing":
             return self.renderer.render_breathing(
                 now, self.speed, self.mode_type,
-                self.color_a, self.color_b, 1.0
+                self.color_a, self.color_b, edge_ug_factor * base_factor
             )
 
         if eff == "matrix":
             if self.mode_type == "dual":
-                return self.color_b
-            return RGBColor(0, 80, 25)
+                return scale_brightness(self.color_b, edge_ug_factor * base_factor)
+            return scale_brightness(RGBColor(0, 80, 25), edge_ug_factor * base_factor)
 
-        # Reactive modes ('laser', 'punch', 'ripple'):
-        # Perimeter underglow is decoupled from keystroke flares.
-        # It displays only ambient base color (or black in single mode).
-        if eff in ("punch", "laser", "ripple"):
-            return RGBColor(0, 0, 0) if self.mode_type == "single" else self.base_color
-
-        return self.base_color
+        return scale_brightness(self.base_color, edge_ug_factor * base_factor)
 
     def stop(self):
         """Cleans up threads, hooks, and resets lighting on shutdown."""
@@ -977,4 +1529,3 @@ class LightingEngineThread(QThread):
 
 # Module-level aliases
 LightingEngine = LightingEngineThread
-

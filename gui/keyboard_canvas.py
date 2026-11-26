@@ -1,7 +1,8 @@
 """
 Everest Studio Pro - High-Performance 2D Keyboard Visualizer.
 Renders real-time hardware LED backlighting, keycap legends, underglow,
-and supports interactive per-key lighting painting using QPainter and @Slot(object).
+and modular 17-key numpad block (Detached/Left/Right).
+Supports interactive per-key lighting painting using QPainter and @Slot(object).
 """
 
 import time
@@ -18,25 +19,27 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
-from engine.matrix import KEY_DEFINITIONS
+from engine.matrix import KEY_DEFINITIONS, NUMPAD_KEY_DEFINITIONS, ALL_KEY_DEFINITIONS
 
 
 class EverestKeyboardCanvas(QWidget):
     """
     Hardware-accelerated 2D visualizer widget replicating the Mountain Everest 60
-    chassis, keycap legends, switch backlights, and perimeter underglow.
+    chassis, keycap legends, switch backlights, perimeter underglow, and modular numpad.
     """
     key_clicked = Signal(int)        # Emits hardware LED index when a keycap is clicked/painted
     selection_changed = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(680, 235)
+        self.setMinimumSize(720, 240)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
         self.setMouseTracking(True)
 
-        # Current frame RGB tuples [(r, g, b), ...] for slots 0..63 + slot 64 (underglow)
-        self.switch_colors: List[Tuple[int, int, int]] = [(15, 0, 40)] * 64
+        self._dock_position: str = "right"  # "right", "left", "detached"
+
+        # Current frame RGB tuples [(r, g, b), ...] for up to 81 switches
+        self.switch_colors: List[Tuple[int, int, int]] = [(15, 0, 40)] * 81
         self.underglow_rgb: Tuple[int, int, int] = (0, 120, 215)
 
         # Selected hardware LED indices for Custom Per-Key mode
@@ -48,18 +51,39 @@ class EverestKeyboardCanvas(QWidget):
         self.slot_screen_rects: Dict[int, QRectF] = {}
         self.hovered_slot: Optional[int] = None
         self.is_painting_drag = False
+        self._last_drag_slot: Optional[int] = None
+
+    @property
+    def dock_position(self) -> str:
+        return self._dock_position
+
+    @dock_position.setter
+    def dock_position(self, val: str):
+        val_clean = val.lower() if isinstance(val, str) else "right"
+        if val_clean not in ("right", "left", "detached"):
+            val_clean = "right"
+        if self._dock_position != val_clean:
+            self._dock_position = val_clean
+            self.slot_screen_rects.clear()
+            self.update()
 
     @Slot(object)
     def update_frame(self, colors_list: object):
         """
         Zero-copy slot receiving lightweight list of RGB tuples from LightingEngineThread.
-        Eliminates Shiboken dict-marshalling overhead.
+        Slots 0..63 = main board keys, 64..80 = modular numpad keys (81 total).
         """
-        if isinstance(colors_list, list) and len(colors_list) >= 64:
-            self.switch_colors = colors_list[:64]
-            if len(colors_list) >= 65:
-                self.underglow_rgb = colors_list[64]
+        if isinstance(colors_list, (list, tuple)) and len(colors_list) >= 64:
+            frame = list(colors_list[:81])
+            if len(frame) < 81:
+                frame.extend([(0, 0, 0)] * (81 - len(frame)))
+            self.switch_colors = frame
             self.update()
+
+    @Slot(object)
+    def update_leds(self, colors):
+        """Alias of update_frame (maps incoming RGB list to 64 main + 17 numpad keys)."""
+        self.update_frame(colors)
 
     @Slot(object)
     def update_underglow(self, ug_tuple: object):
@@ -70,14 +94,20 @@ class EverestKeyboardCanvas(QWidget):
 
     @Slot(int)
     def flash_key(self, slot_idx: int):
-        """Slot called when a physical key strike occurs (0..63)."""
+        """Slot called when a physical key strike occurs (0..80)."""
         self.key_strikes[slot_idx] = time.time()
         self.update()
 
+    @Slot(int)
+    def trigger_flare(self, slot_idx: int):
+        """Alias of flash_key, wired to engine.key_pressed."""
+        self.flash_key(slot_idx)
+
     def select_all_keys(self):
-        """Selects all 64 keys for batch operations in Custom Mode."""
+        """Selects all currently displayed keys for batch operations in Custom Mode."""
+        keys_pool = ALL_KEY_DEFINITIONS if self._dock_position != "detached" else KEY_DEFINITIONS
         self.selected_keys = {
-            k.get("resolved_idx", k["default_idx"]) for k in KEY_DEFINITIONS
+            k.get("resolved_idx", k["default_idx"]) for k in keys_pool
         }
         self.selection_changed.emit(self.selected_keys)
         self.update()
@@ -98,9 +128,10 @@ class EverestKeyboardCanvas(QWidget):
         """Interactive key selection and live painting for Custom Per-Key Lighting."""
         if event.button() == Qt.MouseButton.LeftButton:
             slot_idx = self._slot_at_pos(event.position())
-            if slot_idx is not None:
+            if slot_idx is not None and slot_idx < len(ALL_KEY_DEFINITIONS):
                 self.is_painting_drag = True
-                k = KEY_DEFINITIONS[slot_idx]
+                self._last_drag_slot = slot_idx
+                k = ALL_KEY_DEFINITIONS[slot_idx]
                 led_idx = k.get("resolved_idx", k["default_idx"])
 
                 if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -123,19 +154,22 @@ class EverestKeyboardCanvas(QWidget):
             self.hovered_slot = slot_idx
             self.update()
 
-        if self.is_painting_drag and slot_idx is not None:
-            k = KEY_DEFINITIONS[slot_idx]
-            led_idx = k.get("resolved_idx", k["default_idx"])
-            self.selected_keys.add(led_idx)
-            self.key_clicked.emit(led_idx)
-            self.update()
+        if self.is_painting_drag and slot_idx is not None and slot_idx < len(ALL_KEY_DEFINITIONS):
+            if slot_idx != self._last_drag_slot:
+                self._last_drag_slot = slot_idx
+                k = ALL_KEY_DEFINITIONS[slot_idx]
+                led_idx = k.get("resolved_idx", k["default_idx"])
+                self.selected_keys.add(led_idx)
+                self.key_clicked.emit(led_idx)
+                self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.is_painting_drag = False
+            self._last_drag_slot = None
 
     def paintEvent(self, _event):
-        """Draws the aluminum chassis, diffused underglow, and all 64 switch keycaps."""
+        """Draws the aluminum chassis, diffused underglow, and all 64 or 81 switch keycaps."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
@@ -143,14 +177,18 @@ class EverestKeyboardCanvas(QWidget):
         w = float(self.width())
         h = float(self.height())
 
-        margin_x = 28.0
-        margin_y = 18.0
+        margin_x = 24.0
+        margin_y = 16.0
         avail_w = w - (margin_x * 2.0)
         avail_h = h - (margin_y * 2.0)
 
-        unit = min(avail_w / 15.2, avail_h / 5.2)
-        total_kb_w = unit * 15.0
-        total_kb_h = unit * 5.0
+        is_attached = (self._dock_position in ("right", "left"))
+        grid_w = 19.5 if is_attached else 15.0
+        grid_h = 5.0
+
+        unit = min(avail_w / (grid_w + 0.3), avail_h / (grid_h + 0.3))
+        total_kb_w = unit * grid_w
+        total_kb_h = unit * grid_h
 
         offset_x = (w - total_kb_w) / 2.0
         offset_y = (h - total_kb_h) / 2.0
@@ -171,7 +209,6 @@ class EverestKeyboardCanvas(QWidget):
         edge_qcolor = QColor(ur, ug, ub)
 
         if edge_qcolor.value() > 8:
-            # Outer soft diffused underglow bloom
             for expand, alpha in [(12.0, 28), (7.0, 55), (3.0, 95)]:
                 glow_path = QPainterPath()
                 glow_path.addRoundedRect(
@@ -189,26 +226,43 @@ class EverestKeyboardCanvas(QWidget):
         case_grad.setColorAt(0.0, QColor("#1D2027"))
         case_grad.setColorAt(0.5, QColor("#15171D"))
         case_grad.setColorAt(1.0, QColor("#0F1115"))
-
         painter.fillPath(case_path, case_grad)
 
-        # Perimeter accent rim reflecting active underglow
         rim_color = QColor(ur, ug, ub, 160) if edge_qcolor.value() > 15 else QColor("#2B2F3A")
         painter.strokePath(case_path, QPen(rim_color, 1.8))
 
         # ----------------------------------------------------------------------
-        # 2. DRAW ALL 64 SWITCHES
+        # 2. DRAW SWITCHES (64 CORE + 17 MODULAR NUMPAD IF ATTACHED)
         # ----------------------------------------------------------------------
         now = time.time()
         self.slot_screen_rects.clear()
 
-        font_label = QFont("Segoe UI", max(7, int(unit * 0.25)), QFont.Weight.Bold)
-        font_sublabel = QFont("Segoe UI", max(6, int(unit * 0.19)), QFont.Weight.DemiBold)
+        font_label = QFont("Segoe UI", max(7, int(unit * 0.24)), QFont.Weight.Bold)
+        font_sublabel = QFont("Segoe UI", max(6, int(unit * 0.18)), QFont.Weight.DemiBold)
 
-        for slot_idx, k in enumerate(KEY_DEFINITIONS):
+        keys_to_draw = ALL_KEY_DEFINITIONS if is_attached else KEY_DEFINITIONS
+
+        for k in keys_to_draw:
+            slot_idx = k["slot"]
             led_idx = k.get("resolved_idx", k["default_idx"])
-            kx = offset_x + (k["x"] * unit)
-            ky = offset_y + (k["y"] * unit)
+
+            # Compute screen coordinate based on dock position
+            if slot_idx < 64:
+                # Main 64-key block
+                if self._dock_position == "left":
+                    kx = offset_x + ((k["x"] + 4.5) * unit)
+                else:
+                    kx = offset_x + (k["x"] * unit)
+                ky = offset_y + (k["y"] * unit)
+            else:
+                # Modular numpad block (17 keys)
+                rel_x = k.get("rel_x", 0.0)
+                if self._dock_position == "left":
+                    kx = offset_x + (rel_x * unit)
+                else:  # "right"
+                    kx = offset_x + ((15.5 + rel_x) * unit)
+                ky = offset_y + (k["y"] * unit)
+
             kw = (k["w"] * unit) - (gap * 2.0)
             kh = (k["h"] * unit) - (gap * 2.0)
 
@@ -235,7 +289,7 @@ class EverestKeyboardCanvas(QWidget):
                 rad_grad.setColorAt(1.0, QColor(r, g, b, 0))
                 painter.fillRect(backlight_rect, rad_grad)
 
-            # Keycap Body (#262A35)
+            # Keycap Body
             cap_path = QPainterPath()
             cap_radius = unit * 0.12
             cap_path.addRoundedRect(key_rect, cap_radius, cap_radius)
@@ -251,7 +305,7 @@ class EverestKeyboardCanvas(QWidget):
 
             painter.fillPath(cap_path, cap_grad)
 
-            # Live LED color illumination on keycap surface (vivid illumination matching hardware)
+            # Live LED color illumination on keycap surface
             if led_color.value() > 10:
                 val_norm = led_color.value() / 255.0
                 alpha = int(140 + 75 * val_norm)
@@ -267,7 +321,7 @@ class EverestKeyboardCanvas(QWidget):
             else:
                 painter.strokePath(cap_path, QPen(QColor("#343946"), 1.0))
 
-            # Key Legends (Illuminated with smart contrast)
+            # Key Legends
             label_text = k["label"]
             sublabel_text = k["sublabel"]
 

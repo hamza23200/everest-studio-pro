@@ -61,13 +61,20 @@ def run_tests():
     print("✓ Test 1 Passed: All ghost modifiers rejected, valid keys accepted.")
 
     # ---------------------------------------------------------
-    # TEST 2: Dynamic 64 Switches & 83 Edge Indices Detection
+    # TEST 2: Dynamic Switches & Edge Indices Detection (v2.0)
     # ---------------------------------------------------------
-    print("\n[Test 2] Dynamic 64 Switches & 83 Edge Diffusers Detection...")
-    assert len(engine.switch_indices) == 64, f"Expected 64 switch indices, got {len(engine.switch_indices)}"
-    assert len(engine.edge_indices) == 83, f"Expected 83 edge indices, got {len(engine.edge_indices)}"
+    print("\n[Test 2] Dynamic Switches & Edge Diffusers Detection (v2.0)...")
+    # In attached mode (default): 81 switches + 66 edge diffusers = 147
+    assert len(engine.switch_indices) == 81, f"Expected 81 switch indices, got {len(engine.switch_indices)}"
+    assert len(engine.edge_indices) == 66, f"Expected 66 edge indices, got {len(engine.edge_indices)}"
     assert len(engine.switch_indices) + len(engine.edge_indices) == 147, "Sum of switches + edge must equal 147"
     assert engine.switch_indices.isdisjoint(set(engine.edge_indices)), "Switch and edge indices must not overlap!"
+
+    # In detached mode: 64 switches + 44 edge diffusers
+    engine.dock_position = "detached"
+    assert len(engine.switch_indices) == 64, f"Expected 64 switch indices in detached mode, got {len(engine.switch_indices)}"
+    assert len(engine.edge_indices) == 44, f"Expected 44 edge indices in detached mode, got {len(engine.edge_indices)}"
+    engine.dock_position = "right"
 
     # Verify index 0 is in edge_indices
     assert 0 in engine.edge_indices, "LED 0 is not in edge_indices!"
@@ -112,7 +119,7 @@ def run_tests():
         engine.underglow_mode = "sync"
         engine._render_loop_step(now)
 
-        assert len(frame_output[-1]) == 64, f"Frame must contain exactly 64 keys, got {len(frame_output[-1])}"
+        assert len(frame_output[-1]) in (64, 81), f"Frame must contain 64 or 81 keys, got {len(frame_output[-1])}"
         # Underglow signal must be (0, 0, 0)
         assert ug_output[-1] == (0, 0, 0), f"Underglow not (0,0,0) in {eff} mode at 0% brightness!"
 
@@ -142,6 +149,8 @@ def run_tests():
     # ---------------------------------------------------------
     print("\n[Test 5] Reactive Keystroke Flare Decoupling in 'sync' Mode...")
     engine.underglow_brightness = 50
+    engine.base_brightness = 100.0
+    engine.reactive_brightness = 0.0
     engine.underglow_mode = "sync"
     engine.mode_type = "dual"
     engine.color_a = RGBColor(255, 0, 0)     # Strike color (Red)

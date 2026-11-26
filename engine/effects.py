@@ -7,7 +7,7 @@ All effects take 2D coordinates (x, y) in standard keyboard units and return RGB
 import math
 import colorsys
 import random
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 from openrgb.utils import RGBColor
 
 
@@ -34,6 +34,38 @@ def scale_brightness(c: RGBColor, brightness: float) -> RGBColor:
     """Scales an RGBColor by a brightness factor (0.0 to 1.0)."""
     b = clamp(brightness)
     return RGBColor(int(c.red * b), int(c.green * b), int(c.blue * b))
+
+
+def _calc_laser_wave_intensity(
+    x: float,
+    y: float,
+    now: float,
+    laser_y: float,
+    origin_x: float,
+    t0: float,
+    laser_speed: float,
+    laser_decay: float,
+    pulse_width: float,
+) -> float:
+    """Calculates intensity for a single laser wave with strict Y-axis row lock."""
+    if abs(y - laser_y) > 0.15:
+        return 0.0
+
+    dt = now - t0
+    if dt < 0.0:
+        return 0.0
+
+    dist = abs(x - origin_x)
+    wave_head = laser_speed * dt
+    delta = wave_head - dist
+    tail_len = max(0.1, laser_speed * laser_decay)
+
+    if 0.0 <= delta < tail_len:
+        decay_progress = delta / tail_len
+        return (1.0 - decay_progress) ** 2.0
+    if -pulse_width <= delta < 0.0:
+        return 1.0 + (delta / pulse_width)
+    return 0.0
 
 
 class EffectRenderer:
@@ -155,7 +187,7 @@ class EffectRenderer:
     # --------------------------------------------------------------------------
     @staticmethod
     def render_laser(x: float, y: float, now: float,
-                     active_rows: Dict[int, Tuple[float, float]],
+                     active_rows: Dict[Any, Tuple[float, ...]],
                      laser_speed: float, pulse_width: float,
                      laser_decay: float, mode_type: str,
                      color_a: RGBColor, color_b: RGBColor,
@@ -163,34 +195,36 @@ class EffectRenderer:
         """
         Single Color mode: Idle = Black (0,0,0), Strike = Color A.
         Dual Color mode:   Idle = Color B, Strike = Color A.
+        Enforces strict row lock: illuminated keys must reside on the exact same physical Y row.
         """
-        # Idle base equals color_b (base_color) so inactive keys render self.base_color, not (0, 0, 0)
         idle_base = color_b
         strike_col = color_a
 
-        row = int(round(y))
-        if row not in active_rows:
+        if not active_rows:
             return scale_brightness(idle_base, brightness)
 
-        ox, t0 = active_rows[row]
-        dt = now - t0
-        dist = abs(x - ox)
-        wave_head = laser_speed * dt
-        delta = wave_head - dist
-        tail_len = max(0.1, laser_speed * laser_decay)
+        max_intensity = 0.0
+        for laser_y_key, row_data in list(active_rows.items()):
+            if len(row_data) >= 3:
+                ox, ly, t0 = row_data[0], row_data[1], row_data[2]
+            elif len(row_data) == 2:
+                ox, t0 = row_data
+                try:
+                    ly_val = float(laser_y_key)
+                    ly = ly_val + 0.5 if abs(ly_val - round(ly_val)) < 0.01 else ly_val
+                except (ValueError, TypeError):
+                    continue
+            else:
+                continue
 
-        intensity = 0.0
-        if 0.0 <= delta < tail_len:
-            # Quadratic/exponential trail decay
-            decay_progress = delta / tail_len
-            intensity = (1.0 - decay_progress) ** 2.0
-        elif -pulse_width <= delta < 0.0:
-            # Soft leading crest
-            intensity = 1.0 + (delta / pulse_width)
+            intensity = _calc_laser_wave_intensity(
+                x, y, now, ly, ox, t0, laser_speed, laser_decay, pulse_width
+            )
+            if intensity > max_intensity:
+                max_intensity = intensity
 
-        if intensity > 0.0:
-            intensity = clamp(intensity)
-            color = blend_colors(idle_base, strike_col, intensity)
+        if max_intensity > 0.0:
+            color = blend_colors(idle_base, strike_col, clamp(max_intensity))
         else:
             color = idle_base
 

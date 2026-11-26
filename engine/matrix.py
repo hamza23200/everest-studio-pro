@@ -1,7 +1,8 @@
 """
-Everest 60 Physical Matrix, Coordinate Mapping, and Keycode Lookups.
-Maps all 64 physical switches (in standard 1u keyboard units), all perimeter
-underglow indices, and provides complete Windows OEM virtual keycode tables.
+Everest 60 Physical Matrix, Modular Numpad Mapping, and Keycode Lookups.
+Maps all 64 standard physical switches, 17 modular numpad switches (Left/Right/Detached),
+all 44 standard + 22 numpad perimeter diffusers (147 total LEDs), and provides Windows OEM
+virtual keycode tables.
 """
 
 from typing import Dict, Tuple, List, Set, Optional
@@ -21,10 +22,30 @@ UP_ARROW_INDEX = 101    # Key: Up Arrow (1.0u)
 RIGHT_ALT_INDEX = 113   # Key: Right Alt (1.0u)
 RIGHT_FN_INDEX = 114    # Key: Right Fn (1.0u)
 
-# 64 Physical Key Definitions with Layout Geometry (x, y, w, h in 1u keyboard units)
+# Whitelisted Windows Virtual Key Codes for Numpad Keys (Instant O(1) resolution)
+NUMPAD_VKS: Set[int] = {
+    96,   # VK_NUMPAD0
+    97,   # VK_NUMPAD1
+    98,   # VK_NUMPAD2
+    99,   # VK_NUMPAD3
+    100,  # VK_NUMPAD4
+    101,  # VK_NUMPAD5
+    102,  # VK_NUMPAD6
+    103,  # VK_NUMPAD7
+    104,  # VK_NUMPAD8
+    105,  # VK_NUMPAD9
+    106,  # VK_MULTIPLY (*)
+    107,  # VK_ADD (+)
+    109,  # VK_SUBTRACT (-)
+    110,  # VK_DECIMAL (.)
+    111,  # VK_DIVIDE (/)
+    144,  # VK_NUMLOCK
+}
+
+# 64 Physical Key Definitions for the 60% Core Board
 # Ordered 0..63. Total keyboard width: 15.0u | Total height: 5.0u
 KEY_DEFINITIONS: List[Dict] = [
-    # --- Row 0 (14 keys, indices 0..13) ---
+    # --- Row 0 (14 keys, slots 0..13) ---
     {"slot": 0, "id": "esc", "name": "key: escape", "label": "ESC", "sublabel": "`", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "default_idx": 24},
     {"slot": 1, "id": "1", "name": "key: 1", "label": "1", "sublabel": "!", "x": 1.0, "y": 0.0, "w": 1.0, "h": 1.0, "default_idx": 25},
     {"slot": 2, "id": "2", "name": "key: 2", "label": "2", "sublabel": "@", "x": 2.0, "y": 0.0, "w": 1.0, "h": 1.0, "default_idx": 26},
@@ -40,7 +61,7 @@ KEY_DEFINITIONS: List[Dict] = [
     {"slot": 12, "id": "=", "name": "key: =", "label": "=", "sublabel": "+", "x": 12.0, "y": 0.0, "w": 1.0, "h": 1.0, "default_idx": 36},
     {"slot": 13, "id": "backspace", "name": "key: backspace", "label": "BACK", "sublabel": "", "x": 13.0, "y": 0.0, "w": 2.0, "h": 1.0, "default_idx": 37},
 
-    # --- Row 1 (14 keys, indices 14..27) ---
+    # --- Row 1 (14 keys, slots 14..27) ---
     {"slot": 14, "id": "tab", "name": "key: tab", "label": "TAB", "sublabel": "", "x": 0.0, "y": 1.0, "w": 1.5, "h": 1.0, "default_idx": 46},
     {"slot": 15, "id": "q", "name": "key: q", "label": "Q", "sublabel": "", "x": 1.5, "y": 1.0, "w": 1.0, "h": 1.0, "default_idx": 47},
     {"slot": 16, "id": "w", "name": "key: w", "label": "W", "sublabel": "", "x": 2.5, "y": 1.0, "w": 1.0, "h": 1.0, "default_idx": 48},
@@ -56,7 +77,7 @@ KEY_DEFINITIONS: List[Dict] = [
     {"slot": 26, "id": "]", "name": "key: ]", "label": "]", "sublabel": "}", "x": 12.5, "y": 1.0, "w": 1.0, "h": 1.0, "default_idx": 58},
     {"slot": 27, "id": "backslash", "name": "key: \\ (ansi)", "label": "\\", "sublabel": "|", "x": 13.5, "y": 1.0, "w": 1.5, "h": 1.0, "default_idx": 59},
 
-    # --- Row 2 (13 keys, indices 28..40) ---
+    # --- Row 2 (13 keys, slots 28..40) ---
     {"slot": 28, "id": "caps", "name": "key: caps lock", "label": "CAPS", "sublabel": "", "x": 0.0, "y": 2.0, "w": 1.75, "h": 1.0, "default_idx": 68},
     {"slot": 29, "id": "a", "name": "key: a", "label": "A", "sublabel": "", "x": 1.75, "y": 2.0, "w": 1.0, "h": 1.0, "default_idx": 69},
     {"slot": 30, "id": "s", "name": "key: s", "label": "S", "sublabel": "", "x": 2.75, "y": 2.0, "w": 1.0, "h": 1.0, "default_idx": 70},
@@ -71,7 +92,7 @@ KEY_DEFINITIONS: List[Dict] = [
     {"slot": 39, "id": "'", "name": "key: '", "label": "'", "sublabel": "\"", "x": 11.75, "y": 2.0, "w": 1.0, "h": 1.0, "default_idx": 79},
     {"slot": 40, "id": "enter", "name": "key: enter", "label": "ENTER", "sublabel": "", "x": 12.75, "y": 2.0, "w": 2.25, "h": 1.0, "default_idx": 80},
 
-    # --- Row 3 (14 keys, indices 41..54) ---
+    # --- Row 3 (14 keys, slots 41..54) ---
     {"slot": 41, "id": "lshift", "name": "key: left shift", "label": "SHIFT", "sublabel": "", "x": 0.0, "y": 3.0, "w": 2.0, "h": 1.0, "default_idx": 88},
     {"slot": 42, "id": "z", "name": "key: z", "label": "Z", "sublabel": "", "x": 2.0, "y": 3.0, "w": 1.0, "h": 1.0, "default_idx": 89},
     {"slot": 43, "id": "x", "name": "key: x", "label": "X", "sublabel": "", "x": 3.0, "y": 3.0, "w": 1.0, "h": 1.0, "default_idx": 90},
@@ -87,7 +108,7 @@ KEY_DEFINITIONS: List[Dict] = [
     {"slot": 53, "id": "up", "name": "key: up arrow", "label": "▲", "sublabel": "", "x": 13.0, "y": 3.0, "w": 1.0, "h": 1.0, "default_idx": UP_ARROW_INDEX},
     {"slot": 54, "id": "del", "name": "key: delete", "label": "DEL", "sublabel": "", "x": 14.0, "y": 3.0, "w": 1.0, "h": 1.0, "default_idx": DELETE_INDEX},
 
-    # --- Row 4 (9 keys, indices 55..63) ---
+    # --- Row 4 (9 keys, slots 55..63) ---
     {"slot": 55, "id": "lctrl", "name": "key: left control", "label": "CTRL", "sublabel": "", "x": 0.0, "y": 4.0, "w": 1.25, "h": 1.0, "default_idx": 109},
     {"slot": 56, "id": "lwin", "name": "key: left windows", "label": "WIN", "sublabel": "", "x": 1.25, "y": 4.0, "w": 1.25, "h": 1.0, "default_idx": 110},
     {"slot": 57, "id": "lalt", "name": "key: left alt", "label": "ALT", "sublabel": "", "x": 2.5, "y": 4.0, "w": 1.25, "h": 1.0, "default_idx": 111},
@@ -99,13 +120,67 @@ KEY_DEFINITIONS: List[Dict] = [
     {"slot": 63, "id": "right", "name": "key: right arrow", "label": "▶", "sublabel": "", "x": 14.0, "y": 4.0, "w": 1.0, "h": 1.0, "default_idx": 117},
 ]
 
-# Set of all 64 hardware switch indices
-SWITCH_INDICES: Set[int] = {k["default_idx"] for k in KEY_DEFINITIONS}
+# 17 Modular Numpad Key Definitions (relative coordinates: rel_x from 0.0 to 3.0)
+NUMPAD_KEY_DEFINITIONS: List[Dict] = [
+    # Row 0
+    {"slot": 64, "id": "num_lock", "name": "key: num lock", "label": "NUM", "sublabel": "", "rel_x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "default_idx": 39, "vk": 144},
+    {"slot": 65, "id": "num_div", "name": "key: number pad /", "label": "/", "sublabel": "", "rel_x": 1.0, "y": 0.0, "w": 1.0, "h": 1.0, "default_idx": 40, "vk": 111},
+    {"slot": 66, "id": "num_mul", "name": "key: number pad *", "label": "*", "sublabel": "", "rel_x": 2.0, "y": 0.0, "w": 1.0, "h": 1.0, "default_idx": 41, "vk": 106},
+    {"slot": 67, "id": "num_sub", "name": "key: number pad -", "label": "-", "sublabel": "", "rel_x": 3.0, "y": 0.0, "w": 1.0, "h": 1.0, "default_idx": 42, "vk": 109},
 
-# Key mapping dictionary with extensive aliases for all 64 switches
-KEY_TO_INDEX: Dict[str, int] = {k["id"]: k["default_idx"] for k in KEY_DEFINITIONS}
-KEY_TO_INDEX.update({k["name"].lower(): k["default_idx"] for k in KEY_DEFINITIONS})
-# Spacebar aliases
+    # Row 1
+    {"slot": 68, "id": "num_7", "name": "key: number pad 7", "label": "7", "sublabel": "HOME", "rel_x": 0.0, "y": 1.0, "w": 1.0, "h": 1.0, "default_idx": 61, "vk": 103},
+    {"slot": 69, "id": "num_8", "name": "key: number pad 8", "label": "8", "sublabel": "▲", "rel_x": 1.0, "y": 1.0, "w": 1.0, "h": 1.0, "default_idx": 62, "vk": 104},
+    {"slot": 70, "id": "num_9", "name": "key: number pad 9", "label": "9", "sublabel": "PGUP", "rel_x": 2.0, "y": 1.0, "w": 1.0, "h": 1.0, "default_idx": 63, "vk": 105},
+    {"slot": 71, "id": "num_add", "name": "key: number pad +", "label": "+", "sublabel": "", "rel_x": 3.0, "y": 1.0, "w": 1.0, "h": 2.0, "default_idx": 64, "vk": 107},
+
+    # Row 2
+    {"slot": 72, "id": "num_4", "name": "key: number pad 4", "label": "4", "sublabel": "◀", "rel_x": 0.0, "y": 2.0, "w": 1.0, "h": 1.0, "default_idx": 82, "vk": 100},
+    {"slot": 73, "id": "num_5", "name": "key: number pad 5", "label": "5", "sublabel": "", "rel_x": 1.0, "y": 2.0, "w": 1.0, "h": 1.0, "default_idx": 83, "vk": 101},
+    {"slot": 74, "id": "num_6", "name": "key: number pad 6", "label": "6", "sublabel": "▶", "rel_x": 2.0, "y": 2.0, "w": 1.0, "h": 1.0, "default_idx": 84, "vk": 102},
+
+    # Row 3
+    {"slot": 75, "id": "num_1", "name": "key: number pad 1", "label": "1", "sublabel": "END", "rel_x": 0.0, "y": 3.0, "w": 1.0, "h": 1.0, "default_idx": 103, "vk": 97},
+    {"slot": 76, "id": "num_2", "name": "key: number pad 2", "label": "2", "sublabel": "▼", "rel_x": 1.0, "y": 3.0, "w": 1.0, "h": 1.0, "default_idx": 104, "vk": 98},
+    {"slot": 77, "id": "num_3", "name": "key: number pad 3", "label": "3", "sublabel": "PGDN", "rel_x": 2.0, "y": 3.0, "w": 1.0, "h": 1.0, "default_idx": 105, "vk": 99},
+    {"slot": 78, "id": "num_enter", "name": "key: number pad enter", "label": "ENTER", "sublabel": "", "rel_x": 3.0, "y": 3.0, "w": 1.0, "h": 2.0, "default_idx": 121, "vk": 13},
+
+    # Row 4
+    {"slot": 79, "id": "num_0", "name": "key: number pad 0", "label": "0", "sublabel": "INS", "rel_x": 0.0, "y": 4.0, "w": 2.0, "h": 1.0, "default_idx": 119, "vk": 96},
+    {"slot": 80, "id": "num_dot", "name": "key: number pad .", "label": ".", "sublabel": "DEL", "rel_x": 2.0, "y": 4.0, "w": 1.0, "h": 1.0, "default_idx": 120, "vk": 110},
+]
+
+ALL_KEY_DEFINITIONS: List[Dict] = KEY_DEFINITIONS + NUMPAD_KEY_DEFINITIONS
+
+# Disjoint Index Sets
+MAIN_SWITCH_INDICES: Set[int] = {k["default_idx"] for k in KEY_DEFINITIONS}
+NUMPAD_SWITCH_INDICES: Set[int] = {k["default_idx"] for k in NUMPAD_KEY_DEFINITIONS}
+ALL_SWITCH_INDICES: Set[int] = MAIN_SWITCH_INDICES | NUMPAD_SWITCH_INDICES
+
+# 44 Main Chassis Perimeter Edge LEDs
+MAIN_EDGE_INDICES: List[int] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 23, 38, 45, 60, 67,
+    81, 87, 102, 108, 118, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134,
+    135, 136, 137, 138, 139, 140
+]
+
+# 22 Modular Numpad Perimeter Edge LEDs
+NUMPAD_EDGE_INDICES: List[int] = [
+    17, 18, 19, 20, 21, 22, 43, 44, 65, 66, 85, 86, 106, 107, 122, 123, 141, 142,
+    143, 144, 145, 146
+]
+
+ALL_EDGE_INDICES: List[int] = sorted(MAIN_EDGE_INDICES + NUMPAD_EDGE_INDICES)
+
+# Backward-compatible aliases
+SWITCH_INDICES: Set[int] = MAIN_SWITCH_INDICES
+EDGE_INDICES: List[int] = MAIN_EDGE_INDICES
+
+# Key mapping dictionary with extensive aliases for all switches (Core 64 + Numpad 17)
+KEY_TO_INDEX: Dict[str, int] = {k["id"]: k["default_idx"] for k in ALL_KEY_DEFINITIONS}
+KEY_TO_INDEX.update({k["name"].lower(): k["default_idx"] for k in ALL_KEY_DEFINITIONS})
+
+# Special aliases
 KEY_TO_INDEX.update({
     "space": 112,
     "key: space": 112,
@@ -113,9 +188,6 @@ KEY_TO_INDEX.update({
     " ": 112,
     "vk_32": 112,
     32: 112,
-})
-# Key 3 aliases
-KEY_TO_INDEX.update({
     "3": 27,
     3: 27,
     "key: 3": 27,
@@ -123,53 +195,77 @@ KEY_TO_INDEX.update({
     "vk_51": 27,
     51: 27,
 })
+
+# Numpad aliases
+for nk in NUMPAD_KEY_DEFINITIONS:
+    KEY_TO_INDEX[nk["id"]] = nk["default_idx"]
+    KEY_TO_INDEX[nk["name"]] = nk["default_idx"]
+    KEY_TO_INDEX[f"vk_{nk['vk']}"] = nk["default_idx"]
+    KEY_TO_INDEX[nk["vk"]] = nk["default_idx"]
+
 key_to_index: Dict[str, int] = KEY_TO_INDEX
 
-# 64-item ordered list of (key_id, default_idx) for sequential rendering and the visualizer
-ORDERED_KEYS: List[Tuple[str, int]] = [(k["id"], k.get("resolved_idx", k["default_idx"])) for k in KEY_DEFINITIONS]
-ordered_keys: List[Tuple[str, int]] = ORDERED_KEYS
+# Ordered lists for rendering
+# Legacy 64-key main board list (kept for backward compatibility)
+ordered_keys: List[Tuple[str, int]] = [
+    (k["id"], k.get("resolved_idx", k["default_idx"])) for k in KEY_DEFINITIONS
+]
 
-# 2D physical key coordinate mapping
+# All 81 switches in canonical order: 64 main board keys followed by 17 numpad keys.
+# Each entry is (key_name, openrgb_led_index); position == visualizer slot.
+ORDERED_KEYS: List[Tuple[str, int]] = [
+    (k["id"], k.get("resolved_idx", k["default_idx"])) for k in ALL_KEY_DEFINITIONS
+]
+ALL_ORDERED_KEYS: List[Tuple[str, int]] = ORDERED_KEYS
+
+# Reverse mapping {led_idx: key_name} for all 81 switches
+INDEX_TO_KEY: Dict[int, str] = {idx: name for name, idx in ORDERED_KEYS}
+index_to_key: Dict[int, str] = INDEX_TO_KEY
+
+# Coordinates dictionary (Default: docked right)
 KEY_COORDINATES: Dict[str, Tuple[float, float]] = {k["id"]: (k["x"], k["y"]) for k in KEY_DEFINITIONS}
 KEY_COORDINATES.update({k["name"].lower(): (k["x"], k["y"]) for k in KEY_DEFINITIONS})
 KEY_COORDINATES["3"] = (3.0, 0.0)
 KEY_COORDINATES[3] = (3.0, 0.0)
+
+for nk in NUMPAD_KEY_DEFINITIONS:
+    KEY_COORDINATES[nk["id"]] = (15.5 + nk["rel_x"], nk["y"])
+    KEY_COORDINATES[nk["name"]] = (15.5 + nk["rel_x"], nk["y"])
+
 key_coordinates: Dict[str, Tuple[float, float]] = KEY_COORDINATES
 
-# Complete Perimeter Underglow & Accent LEDs (all 83 non-switch indices 0..146)
-EDGE_INDICES: List[int] = sorted([i for i in range(TOTAL_LEDS) if i not in SWITCH_INDICES])
+
+def build_key_coordinates(dock_position: str = "right") -> Dict[str, Tuple[float, float]]:
+    """Returns {key_name: (x, y)} for all 81 switches (key centers) for the given dock position.
+
+    The numpad is omitted when 'detached'.
+    """
+    coords: Dict[str, Tuple[float, float]] = {}
+    for k in KEY_DEFINITIONS:
+        coords[k["id"]] = (k["x"] + k["w"] / 2.0, k["y"] + k["h"] / 2.0)
+    if dock_position != "detached":
+        base_x = 15.5 if dock_position == "right" else -4.5
+        for nk in NUMPAD_KEY_DEFINITIONS:
+            coords[nk["id"]] = (
+                base_x + nk["rel_x"] + nk["w"] / 2.0,
+                nk["y"] + nk["h"] / 2.0,
+            )
+    return coords
 
 
-def verify_matrix_mappings(name_to_index: Optional[Dict[str, int]] = None) -> bool:
-    """Verifies that all 64 switches, Key 3 (index 27), and Spacebar (index 112) are mapped."""
-    coords, idx_to_slot = build_matrix_coords(name_to_index or {})
-    switch_count = len(coords)
-    key_3_mapped = (27 in coords) and (27 in idx_to_slot)
-    spacebar_mapped = (112 in coords) and (112 in idx_to_slot)
-    status_3 = "mapped" if key_3_mapped else "UNMAPPED"
-    status_space = "mapped" if spacebar_mapped else "UNMAPPED"
-
-    # Strict audit assertions for matrix collections
-    assert key_to_index.get("3") == 27, "key_to_index['3'] != 27!"
-    assert key_to_index.get(3) == 27, "key_to_index[3] != 27!"
-    assert key_to_index.get("#") == 27, "key_to_index['#'] != 27!"
-    assert ordered_keys[3] == ("3", 27), f"ordered_keys[3] is {ordered_keys[3]}, expected ('3', 27)!"
-    assert ordered_keys[2] == ("2", 26), f"ordered_keys[2] is {ordered_keys[2]}, expected ('2', 26)!"
-    assert ordered_keys[4] == ("4", 28), f"ordered_keys[4] is {ordered_keys[4]}, expected ('4', 28)!"
-    assert KEY_COORDINATES.get("3") == (3.0, 0.0), f"KEY_COORDINATES['3'] is {KEY_COORDINATES.get('3')}!"
-
-    print(f"[MATRIX] Verified {switch_count} key switches. Index 27 (Key 3): {status_3}. Spacebar: {status_space}.")
-    return switch_count == 64 and key_3_mapped and spacebar_mapped
-
-
-def build_matrix_coords(name_to_index: Dict[str, int]) -> Tuple[Dict[int, Tuple[float, float]], Dict[int, int]]:
+def build_matrix_coords(
+    name_to_index: Dict[str, int],
+    dock_position: str = "right"
+) -> Tuple[Dict[int, Tuple[float, float]], Dict[int, int]]:
     """
     Computes exact physical center coordinate (center_x, center_y) for each key switch index
-    and maps hardware LED index -> slot (0..63).
+    and maps hardware LED index -> slot (0..63 for 60%, 64..80 for numpad).
+    Respects dock_position: 'right', 'left', or 'detached'.
     """
     coords: Dict[int, Tuple[float, float]] = {}
     idx_to_slot: Dict[int, int] = {}
 
+    # 1. Main 64 switches
     for k in KEY_DEFINITIONS:
         openrgb_name = k["name"].lower()
         if k["id"] == "3" or openrgb_name == "key: 3":
@@ -189,49 +285,115 @@ def build_matrix_coords(name_to_index: Dict[str, int]) -> Tuple[Dict[int, Tuple[
             idx = name_to_index.get(openrgb_name, k["default_idx"])
 
         center_x = k["x"] + (k["w"] / 2.0)
-        center_y = k["y"]
+        center_y = k["y"] + (k["h"] / 2.0)
         coords[idx] = (center_x, center_y)
         idx_to_slot[idx] = k["slot"]
         k["resolved_idx"] = idx
 
+    # 2. Numpad 17 switches (only if not detached)
+    if dock_position != "detached":
+        base_x = 15.5 if dock_position == "right" else -4.5
+        for nk in NUMPAD_KEY_DEFINITIONS:
+            openrgb_name = nk["name"].lower()
+            idx = name_to_index.get(openrgb_name, nk["default_idx"])
+            center_x = base_x + nk["rel_x"] + (nk["w"] / 2.0)
+            center_y = nk["y"] + (nk["h"] / 2.0)
+            coords[idx] = (center_x, center_y)
+            idx_to_slot[idx] = nk["slot"]
+            nk["resolved_idx"] = idx
+
     return coords, idx_to_slot
 
 
-def build_key_lookups(name_to_index: Dict[str, int]) -> Tuple[Dict[int, int], Dict[str, int], Dict[keyboard.Key, int]]:
+def build_edge_coords(
+    name_to_index: Dict[str, int],
+    dock_position: str = "right"
+) -> Dict[int, Tuple[float, float]]:
+    """
+    Computes physical (x, y) coordinates for all perimeter edge diffusers
+    to enable mathematically seamless wave propagation into the underglow.
+    """
+    edge_coords: Dict[int, Tuple[float, float]] = {}
+
+    # Main Board: 44 Edge Diffusers around 15.0u x 5.0u rectangle
+    # Top edge (0..16): X 0.0 to 15.0, Y = -0.5
+    top_indices = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    for i, idx in enumerate(top_indices):
+        edge_coords[idx] = (i * (15.0 / max(1, len(top_indices) - 1)), -0.5)
+
+    # Right edge (17..21, 38, 60, 81, 102, 118)
+    right_indices = [38, 60, 81, 102, 118]
+    for i, idx in enumerate(right_indices):
+        edge_coords[idx] = (15.4, i * (5.0 / max(1, len(right_indices) - 1)))
+
+    # Bottom edge (22..37, 124..140)
+    bot_indices = [124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140]
+    for i, idx in enumerate(bot_indices):
+        edge_coords[idx] = (15.0 - i * (15.0 / max(1, len(bot_indices) - 1)), 5.5)
+
+    # Left edge (0, 23, 45, 67, 87, 108)
+    left_indices = [0, 23, 45, 67, 87, 108]
+    for i, idx in enumerate(left_indices):
+        edge_coords[idx] = (-0.5, 5.0 - i * (5.0 / max(1, len(left_indices) - 1)))
+
+    # Numpad Diffusers (22 LEDs)
+    if dock_position != "detached":
+        base_x = 15.5 if dock_position == "right" else -4.5
+        # Top (18..22)
+        top_np = [18, 19, 20, 21, 22]
+        for i, idx in enumerate(top_np):
+            edge_coords[idx] = (base_x + i * 0.8, -0.5)
+
+        # Right (44, 66, 86, 107, 123)
+        right_np = [44, 66, 86, 107, 123]
+        for i, idx in enumerate(right_np):
+            edge_coords[idx] = (base_x + 4.4, i * 1.0)
+
+        # Bottom (141..146)
+        bot_np = [141, 142, 143, 144, 145, 146]
+        for i, idx in enumerate(bot_np):
+            edge_coords[idx] = (base_x + 4.0 - i * 0.67, 5.5)
+
+        # Left (17, 43, 65, 85, 106, 122)
+        left_np = [17, 43, 65, 85, 106, 122]
+        for i, idx in enumerate(left_np):
+            edge_coords[idx] = (base_x - 0.4, 5.0 - i * 0.83)
+
+    return edge_coords
+
+
+def build_key_lookups(
+    name_to_index: Dict[str, int]
+) -> Tuple[Dict[int, int], Dict[str, int], Dict[keyboard.Key, int]]:
     """
     Builds direct Windows Virtual Keycode, character, and special key lookup dictionaries.
-    Guarantees all lookups resolve strictly to switch indices and never fallback to 0 or edge indices.
+    Includes all 17 numpad virtual keycodes for sub-microsecond non-blocking keystroke dispatch.
     """
     n = name_to_index
 
     def _safe_switch(idx: Optional[int], default_idx: int) -> int:
-        if idx is not None and idx not in EDGE_INDICES:
+        if idx is not None and idx in ALL_SWITCH_INDICES:
             return idx
         return default_idx
 
-    space_idx = _safe_switch(
-        n.get("key: space") or n.get("space") or n.get("Key.space"),
-        112
-    )
+    space_idx = _safe_switch(n.get("key: space") or n.get("space") or n.get("Key.space"), 112)
     key_3_idx = _safe_switch(n.get("key: 3") or n.get("3"), 27)
     quote_idx = _safe_switch(
-        n.get("key: '")
-        or n.get("key: \'", 79)
-        or n.get("key: quote")
-        or n.get("key: single quote"),
+        n.get("key: '") or n.get("key: \'", 79) or n.get("key: quote") or n.get("key: single quote"),
         79
     )
     slash_idx = _safe_switch(n.get("key: /"), SLASH_INDEX)
     backslash_idx = _safe_switch(n.get("key: \\ (ansi)") or n.get("key: \\"), 59)
     semicolon_idx = _safe_switch(n.get("key: ;"), 78)
 
-    # Windows Virtual Key Codes (Direct hardware hooks for standard numbers & OEM punctuation)
+    # Windows Virtual Key Codes
     vk_map: Dict[int, int] = {
+        # Core 60% keys
         32: space_idx,                                         # VK_SPACE
         48: _safe_switch(n.get("key: 0"), 34),                # VK_0
         49: _safe_switch(n.get("key: 1"), 25),                # VK_1
         50: _safe_switch(n.get("key: 2"), 26),                # VK_2
-        51: key_3_idx,                                         # VK_3 (Explicit Key 3 -> 27)
+        51: key_3_idx,                                         # VK_3
         52: _safe_switch(n.get("key: 4"), 28),                # VK_4
         53: _safe_switch(n.get("key: 5"), 29),                # VK_5
         54: _safe_switch(n.get("key: 6"), 30),                # VK_6
@@ -249,6 +411,24 @@ def build_key_lookups(name_to_index: Dict[str, int]) -> Tuple[Dict[int, int], Di
         220: backslash_idx,                                    # OEM_5 (\|)
         221: _safe_switch(n.get("key: ]"), 58),               # OEM_6 (]}
         222: quote_idx,                                        # OEM_7 ('")
+
+        # Numpad VKs (Direct fast-path)
+        144: _safe_switch(n.get("key: num lock"), 39),        # VK_NUMLOCK
+        111: _safe_switch(n.get("key: number pad /"), 40),    # VK_DIVIDE
+        106: _safe_switch(n.get("key: number pad *"), 41),    # VK_MULTIPLY
+        109: _safe_switch(n.get("key: number pad -"), 42),    # VK_SUBTRACT
+        103: _safe_switch(n.get("key: number pad 7"), 61),    # VK_NUMPAD7
+        104: _safe_switch(n.get("key: number pad 8"), 62),    # VK_NUMPAD8
+        105: _safe_switch(n.get("key: number pad 9"), 63),    # VK_NUMPAD9
+        107: _safe_switch(n.get("key: number pad +"), 64),    # VK_ADD
+        100: _safe_switch(n.get("key: number pad 4"), 82),    # VK_NUMPAD4
+        101: _safe_switch(n.get("key: number pad 5"), 83),    # VK_NUMPAD5
+        102: _safe_switch(n.get("key: number pad 6"), 84),    # VK_NUMPAD6
+        97:  _safe_switch(n.get("key: number pad 1"), 103),   # VK_NUMPAD1
+        98:  _safe_switch(n.get("key: number pad 2"), 104),   # VK_NUMPAD2
+        99:  _safe_switch(n.get("key: number pad 3"), 105),   # VK_NUMPAD3
+        96:  _safe_switch(n.get("key: number pad 0"), 119),   # VK_NUMPAD0
+        110: _safe_switch(n.get("key: number pad ."), 120),   # VK_DECIMAL
     }
 
     # Shifted & Standard Character Normalization Map
@@ -310,21 +490,58 @@ def build_key_lookups(name_to_index: Dict[str, int]) -> Tuple[Dict[int, int], Di
     return vk_map, char_map, special_map
 
 
+def verify_matrix_mappings(name_to_index: Optional[Dict[str, int]] = None) -> bool:
+    """Verifies that all 64 switches, Key 3 (index 27), Spacebar (index 112), and numpad keys are mapped."""
+    coords, idx_to_slot = build_matrix_coords(name_to_index or {}, dock_position="right")
+    switch_count = len(coords)
+    key_3_mapped = (27 in coords) and (27 in idx_to_slot)
+    spacebar_mapped = (112 in coords) and (112 in idx_to_slot)
+    status_3 = "mapped" if key_3_mapped else "UNMAPPED"
+    status_space = "mapped" if spacebar_mapped else "UNMAPPED"
+
+    # Strict audit assertions for matrix collections
+    assert key_to_index.get("3") == 27, "key_to_index['3'] != 27!"
+    assert key_to_index.get(3) == 27, "key_to_index[3] != 27!"
+    assert key_to_index.get("#") == 27, "key_to_index['#'] != 27!"
+    assert ordered_keys[3] == ("3", 27), f"ordered_keys[3] is {ordered_keys[3]}, expected ('3', 27)!"
+    assert ordered_keys[2] == ("2", 26), f"ordered_keys[2] is {ordered_keys[2]}, expected ('2', 26)!"
+    assert ordered_keys[4] == ("4", 28), f"ordered_keys[4] is {ordered_keys[4]}, expected ('4', 28)!"
+    assert KEY_COORDINATES.get("3") == (3.0, 0.0), f"KEY_COORDINATES['3'] is {KEY_COORDINATES.get('3')}!"
+
+    print(f"[MATRIX] Verified {switch_count} key switches. Index 27 (Key 3): {status_3}. Spacebar: {status_space}.")
+    return (switch_count == 81) and key_3_mapped and spacebar_mapped
+
+
 class KeyboardMatrix:
     """Namespace / class wrapper for Everest 60 physical matrix definitions."""
     KEY_DEFINITIONS = KEY_DEFINITIONS
+    NUMPAD_KEY_DEFINITIONS = NUMPAD_KEY_DEFINITIONS
+    ALL_KEY_DEFINITIONS = ALL_KEY_DEFINITIONS
+    MAIN_SWITCH_INDICES = MAIN_SWITCH_INDICES
+    NUMPAD_SWITCH_INDICES = NUMPAD_SWITCH_INDICES
+    ALL_SWITCH_INDICES = ALL_SWITCH_INDICES
+    MAIN_EDGE_INDICES = MAIN_EDGE_INDICES
+    NUMPAD_EDGE_INDICES = NUMPAD_EDGE_INDICES
+    ALL_EDGE_INDICES = ALL_EDGE_INDICES
     KEY_TO_INDEX = KEY_TO_INDEX
     key_to_index = KEY_TO_INDEX
     ORDERED_KEYS = ORDERED_KEYS
-    ordered_keys = ORDERED_KEYS
+    ordered_keys = ordered_keys
+    INDEX_TO_KEY = INDEX_TO_KEY
+    index_to_key = INDEX_TO_KEY
     KEY_COORDINATES = KEY_COORDINATES
     key_coordinates = KEY_COORDINATES
-    EDGE_INDICES = EDGE_INDICES
-    SWITCH_INDICES = SWITCH_INDICES
+    EDGE_INDICES = MAIN_EDGE_INDICES
+    SWITCH_INDICES = MAIN_SWITCH_INDICES
+    dock_position = "right"
 
     @staticmethod
-    def build_coords(name_to_index: Dict[str, int]):
-        return build_matrix_coords(name_to_index)
+    def build_coords(name_to_index: Dict[str, int], dock_position: str = "right"):
+        return build_matrix_coords(name_to_index, dock_position)
+
+    @staticmethod
+    def build_edge_coords(name_to_index: Dict[str, int], dock_position: str = "right"):
+        return build_edge_coords(name_to_index, dock_position)
 
     @staticmethod
     def build_lookups(name_to_index: Dict[str, int]):
@@ -335,5 +552,5 @@ class KeyboardMatrix:
         return verify_matrix_mappings(name_to_index)
 
 
-# Run matrix self-audit on module import
+# Self-test upon module load
 verify_matrix_mappings()
