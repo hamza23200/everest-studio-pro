@@ -9,6 +9,7 @@ and zero-copy 35 FPS visualizer synchronization.
 import os
 import sys
 import json
+from pathlib import Path
 from typing import Optional, Dict
 import threading
 from PySide6.QtCore import Qt, Signal, QSize, QTimer
@@ -2432,10 +2433,10 @@ class EverestStudioWindow(QMainWindow):
     def _get_config_path(self) -> str:
         """Determines config.json path adjacent to the executable or project root."""
         if getattr(sys, "frozen", False):
-            base_dir = os.path.dirname(sys.executable)
+            base_dir = Path(sys.executable).resolve().parent
         else:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        return os.path.join(base_dir, "config.json")
+            base_dir = Path(__file__).resolve().parent.parent
+        return str(base_dir / "config.json")
 
     def save_settings(self):
         """Serializes current engine, per-effect profiles, and UI state to config.json."""
@@ -2474,9 +2475,20 @@ class EverestStudioWindow(QMainWindow):
                     "active_slot": 1,
                     "slots": self._get_default_slots_for_effect(eff)
                 }
+            default_eff = "wave"
+            self.engine.effect_name = default_eff
             self.active_profile_slot = 1
             self._set_dock_position(DIR_RIGHT)
+            if hasattr(self, "effects_list"):
+                for i in range(self.effects_list.count()):
+                    if self.effects_list.item(i).data(Qt.ItemDataRole.UserRole) == default_eff:
+                        self.effects_list.setCurrentRow(i)
+                        break
+            slot_data = self.effect_profiles[default_eff]["slots"].get("1", {})
+            self._apply_profile_dict(slot_data)
+            self._reconfigure_deck_for_effect(default_eff)
             self._update_profile_buttons_style()
+            self.save_settings()
             return
 
         try:

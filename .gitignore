@@ -5,11 +5,13 @@ __pycache__/
 # Build outputs & heavy binaries
 build/
 dist/
-*.spec
 
-# Local user configs & logs
+# Local user configs, logs, portable daemon, & scratch tests
 config.json
+*.log
 *.lock
+OpenRGB/
+scratch/
 
 # IDE & Editor folders
 .vscode/

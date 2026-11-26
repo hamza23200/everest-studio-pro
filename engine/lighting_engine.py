@@ -12,9 +12,11 @@ import socket
 import subprocess
 import os
 import math
+import shutil
 import threading
 import traceback
 import ctypes
+from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, Set
 from PySide6.QtCore import QThread, Signal
 from openrgb import OpenRGBClient
@@ -77,28 +79,30 @@ def check_socket_open(host: str = "127.0.0.1", port: int = 6742, timeout: float 
 
 def spawn_openrgb_server(wait_seconds: float = 8.0) -> bool:
     """
-    Auto-spawns OpenRGB in silent minimized server mode if installed locally.
+    Auto-spawns OpenRGB in silent minimized server mode using portable dynamic discovery.
     Uses CREATE_NO_WINDOW and SW_HIDE so no console window flashes.
     """
-    base_dir = (
-        os.path.dirname(sys.executable)
-        if getattr(sys, "frozen", False)
-        else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    is_frozen = getattr(sys, "frozen", False)
+    app_dir = (
+        Path(sys.executable).resolve().parent
+        if is_frozen
+        else Path(__file__).resolve().parent.parent
     )
     candidates = [
-        os.path.join(base_dir, OPENRGB_EXE),
-        os.path.join(base_dir, "dist", OPENRGB_EXE),
-        os.path.join(os.getcwd(), OPENRGB_EXE),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "OpenRGB", OPENRGB_EXE),
-        os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "OpenRGB", OPENRGB_EXE),
-        os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"), "OpenRGB", OPENRGB_EXE),
-        os.path.join("C:\\OpenRGB", OPENRGB_EXE),
+        app_dir / "OpenRGB" / OPENRGB_EXE,
+        app_dir / OPENRGB_EXE,
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "OpenRGB" / OPENRGB_EXE,
+        Path(os.environ.get("LOCALAPPDATA", "")) / "OpenRGB" / OPENRGB_EXE,
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "OpenRGB" / OPENRGB_EXE,
     ]
 
-    target = next((p for p in candidates if os.path.exists(p)), None)
+    target = next((str(p) for p in candidates if p.is_file()), None)
     if not target:
-        import shutil
         target = shutil.which(OPENRGB_EXE) or shutil.which("OpenRGB")
+    if not target and not is_frozen:
+        dev_dist = app_dir / "dist" / OPENRGB_EXE
+        if dev_dist.is_file():
+            target = str(dev_dist)
 
     if target:
         try:

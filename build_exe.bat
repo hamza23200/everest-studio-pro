@@ -4,7 +4,7 @@ echo  Everest Studio Pro - PyInstaller One-Click Build Script
 echo =====================================================================
 echo Building EverestStudio.exe...
 
-pyinstaller --noconsole --onefile --name "EverestStudio" --clean main.py
+pyinstaller EverestStudio.spec --noconfirm --clean
 
 echo.
 if exist "dist\EverestStudio.exe" (
@@ -13,5 +13,4 @@ if exist "dist\EverestStudio.exe" (
     echo [ERROR] Build failed. Verify pyinstaller is installed.
 )
 echo =====================================================================
-pause
-
+if /I not "%~1"=="--nopause" pause
