@@ -1,141 +1,206 @@
 # Everest Studio Pro
 
-[![Release](https://img.shields.io/badge/Release-v3.0-blue)](https://github.com/hamza23200/everest-studio-pro/releases/latest)
-[![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-blue?logo=windows)](https://github.com/hamza23200/everest-studio-pro)
-[![License](https://img.shields.io/badge/License-GPL--3.0-green)](LICENSE)
+[![Release](https://img.shields.io/badge/Release-v3.0-0078D7?style=for-the-badge)](https://github.com/hamza23200/everest-studio-pro/releases/latest)
+[![Platform](https://img.shields.io/badge/Windows-10%20%7C%2011%20(x64)-0078D7?style=for-the-badge)](https://github.com/hamza23200/everest-studio-pro/releases/latest)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-GPL--3.0-green?style=for-the-badge)](LICENSE)
 
-**Production-Grade Base Camp Replacement & Lighting Suite for the Mountain Everest 60 (147 LEDs)**
-
-Built with **PySide6**, **openrgb-python**, **pynput**, **NumPy**, **PyAudioWPatch**, and **mss**. Replicates Mountain's dark slate Base Camp aesthetic with a 35 FPS single-thread OpenRGB hardware clock, modular numpad dock geometry, decoupled WASAPI Audio Equalizer and Screen Ambilight capture threads, per-effect 5-slot profiles, and one-click virtual USB recovery.
+A fast, lightweight, free replacement for Mountain Base Camp built specifically for the **Mountain Everest 60** mechanical keyboard (including the modular numpad).
 
 ![Everest Studio Pro v3.0](assets/everest_v3_preview.png)
 
+### Why Switch from Base Camp?
+* **25 Custom RGB Effects** — including a live music visualizer, screen color sync, lightning storms, typing heatmap, and snappy reactive lasers.
+* **Ultra-Lightweight** — runs quietly in your system tray with minimal CPU/RAM usage.
+* **No Accounts or Bloat** — zero logins, zero cloud sync, zero background telemetry. Everything saves locally.
+* **Full Control** — independent brightness sliders for keys vs. desk underglow, 5 quick-switch presets (`P1`–`P5`) per effect, and full Left / Right / Detached numpad support.
+
 ---
 
-## Quick Start
+## Easy Install (Windows 10 & 11 — No Coding Needed)
 
-### Option A — Standalone Windows `.exe` (Recommended, No Python Needed)
+You can get running in under 2 minutes:
 
-1. Download `EverestStudio-v3.0-win64.zip` from the [GitHub Releases](https://github.com/hamza23200/everest-studio-pro/releases/latest) page and extract it anywhere.
-2. Download the Windows 64-bit portable `.zip` of **OpenRGB** from [https://openrgb.org/releases.html](https://openrgb.org/releases.html) and extract it into an `OpenRGB/` folder right next to `EverestStudio.exe`.
-3. **First-time OpenRGB setup (Important):** Launch `OpenRGB\OpenRGB.exe` once, check **"Do not show this message again"** on the PawnIO/I2C warning dialog (if shown), verify `Initial Detection Delay` is set to `0` in Settings, and close OpenRGB.
-4. Exit Mountain **Base Camp** completely (right-click its system tray icon → **Exit**, and disable it in Task Manager → **Startup apps**).
-5. Run `EverestStudio.exe`. It will automatically launch OpenRGB silently in the background, generate a default `config.json` next to `EverestStudio.exe`, and switch the keyboard into Direct Mode.
+### 1. Close Mountain Base Camp
+Right-click the **Base Camp** icon in your taskbar (click the little `^` arrow near the clock) and select **Exit**.
+> *Tip: Open **Task Manager → Startup Apps** and disable Mountain Base Camp so it doesn't fight Everest Studio Pro for control of your keyboard.*
 
-### Option B — Run from Source (Python 3.11+)
+### 2. Download Everest Studio Pro
+1. Click **Releases** on the right side of this page (or [click here](https://github.com/hamza23200/everest-studio-pro/releases/latest)).
+2. Download **`EverestStudio-v3.0-win64.zip`**.
+3. Right-click the downloaded zip file → click **Extract All...** into a folder (for example, `Desktop\EverestStudio`).
 
+### 3. Download OpenRGB (Required Hardware Bridge)
+Everest Studio Pro uses **OpenRGB** silently in the background to talk to your keyboard.
+1. Go to [openrgb.org/releases.html](https://openrgb.org/releases.html) and download **Windows (64-bit)**.
+2. Extract it and place the files into a folder named **`OpenRGB`** right next to `EverestStudio.exe`.
+
+**Make sure your folder looks exactly like this** (don't leave `OpenRGB.exe` buried inside an extra subfolder):
+
+```text
+EverestStudio/
+├── EverestStudio.exe
+└── OpenRGB/
+    ├── OpenRGB.exe   <-- Must be directly inside the OpenRGB folder!
+    └── (other OpenRGB files...)
+```
+
+### 4. One-Time OpenRGB Check
+Double-click `OpenRGB\OpenRGB.exe` **once**.
+* If a warning popup appears (such as a PawnIO or SMBus message), check **"Do not show this message again"** and click **OK**.
+* Close OpenRGB completely (right-click its tray icon → **Exit**). You won't need to open it manually again.
+
+### 5. Launch Everest Studio Pro
+Double-click **`EverestStudio.exe`**. The status badge in the top-right will turn green (**`CONNECTED`**) and your keyboard will light up immediately.
+
+> **Note on Windows Security ("Windows protected your PC"):**
+> Because Everest Studio Pro is a free, open-source project without a paid Microsoft signing certificate, Windows Defender SmartScreen may show a blue warning popup the first time you run it. Click **More info** → **Run anyway**. *(All source code is public right here in this repository if you prefer to inspect or run it with Python.)*
+
+---
+
+## Key Features & All 25 Lighting Effects
+
+* **Live 81-Key Preview:** See your exact lighting live on screen before you even look down at your desk.
+* **Modular Numpad Docking:** Switch between **Right Dock**, **Left Dock**, or **Detached** so animations flow naturally across the numpad.
+* **Dual Brightness & Desk Underglow:** Adjust idle key brightness, keypress flash brightness, and the outer edge glow independently—or turn the edge glow completely off (`0%`) while keeping keys bright.
+* **5 Preset Slots (`P1`–`P5`):** Save up to 5 favorite color themes and speed settings for every single effect.
+
+### Ambient Effects
+1. **Color Wave** — Smooth rainbow or custom dual-color waves sweeping across the keyboard.
+2. **Breathing** — Gentle, rhythmic glow that slowly fades in and out.
+3. **Waterfall** — Cascading bands of color flowing downward row by row like liquid.
+4. **Aurora** — Slow, fluid Northern Lights curtains blending emerald, teal, blue, and violet.
+5. **Gradient Breathing** — Holds a two-tone gradient across the board while smoothly breathing in brightness.
+6. **Cosmic Drift** — Drifting deep-space nebula with occasional white stars twinkling in and out.
+7. **Thunderstorm** — Moody midnight-blue backdrop with random lightning strikes and occasional full-board thunderclaps.
+8. **System Malfunction** — Cyberpunk purple base that periodically glitches with brief red, white, or cyan row flickers.
+
+### Dynamic FX
+9. **Tornado** — Spinning vortex of light rotating clockwise or counter-clockwise around the center.
+10. **DNA Spiral** — Two opposing color streams spiraling outward or inward like a double helix.
+11. **Row Sweep** — A glowing light trail that sweeps across each row from top to bottom and repeats.
+12. **Falling Matrix** — Digital rain drops streaking down each column with bright leading sparks.
+13. **Meteor Shower** — Independent shooting meteors streaking across the board with glowing tails.
+
+### Reactive Effects (Light Up as You Type)
+14. **Snappy Laser** — Ultra-fast horizontal laser beams firing cleanly along the exact row you press.
+15. **Expanding Ripple** — Smooth circular waves radiating outward from every keystroke.
+16. **Explosion Burst** — High-energy flash and radial shockwave with decaying embers on nearby keys.
+17. **Crosshair** — Illuminates the full horizontal row and vertical column intersecting the key you press.
+18. **Full-Board Flash** — Every keypress pulses the whole keyboard and smoothly fades back to your idle color.
+19. **Single-Key Punch** — Lights up just the key you pressed with a crisp fade-out trail.
+20. **Typing Heatmap** — Keys shift from cool blue to glowing red as you type more frequently, with live cooldown or full-session tracking.
+
+### System Sync
+21. **Audio Equalizer** — Turns your keyboard into a live music visualizer reacting to Spotify, YouTube, or games in real time (**Spectrum Bars** or **Bass Pulse** mode). Works automatically with your default Windows speakers or headphones.
+22. **Screen Ambilight** — Mirrors the live colors of your monitor (full screen or monitor edges) onto your keys and perimeter glow. Supports multi-monitor setups.
+
+### Static & Custom
+23. **Static Color** — Clean, solid color across the entire board with zero wasted USB traffic.
+24. **Custom Per-Key** — Click keys directly on the on-screen keyboard to paint or erase your own custom layout.
+25. **Lighting Off** — Cleanly blacks out all switches and edge LEDs.
+
+---
+
+## Troubleshooting
+
+**My keyboard didn't light up after restarting my PC?**
+
+Click the **`🔄 SYNC`** button in the top-right corner of Everest Studio Pro and click **Yes** on the Windows permission popup. It safely resets the keyboard's USB connection in software—just like unplugging and replugging the cable—and wakes your lighting immediately.
+
+**The app says `OFFLINE / SIMULATOR`**
+1. Make sure Mountain **Base Camp** is completely closed (check the taskbar `^` tray).
+2. Check that `OpenRGB.exe` is directly inside the `OpenRGB` folder next to `EverestStudio.exe` (see Step 3 above).
+3. Click **`🔄 SYNC`**.
+
+**Audio Equalizer isn't reacting to my music?**
+
+Make sure audio is actively playing through your default Windows playback device (speakers or headphones) and try sliding **Sensitivity** slightly higher.
+
+---
+
+## Advanced & Developer Guides
+
+<details>
+<summary><b>Auto-Start Hands-Free on Windows Boot (Optional)</b></summary>
+
+Because the Mountain Everest 60 can stay asleep after a Windows restart until its USB interface resets, you can let Windows handle the reset and launch Everest Studio Pro automatically with no permission popups:
+
+1. Press `Win`, type **Task Scheduler**, and open it.
+2. Click **Create Task...** on the right panel.
+3. **General tab:** Name it `Everest Studio Pro Boot Sync` and check **Run with highest privileges**.
+4. **Triggers tab:** Click **New...** → Begin the task: **At log on** → check **Delay task for:** `10 seconds` → **OK**.
+5. **Actions tab:**
+   * **Action 1:** Click **New...**
+     * Program/script: `powershell.exe`
+     * Add arguments:
+       ```text
+       -NoProfile -WindowStyle Hidden -Command "Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like 'USB\VID_3282&PID_0005&MI_*' } | ForEach-Object { pnputil /restart-device $_.InstanceId }"
+       ```
+   * **Action 2:** Click **New...**
+     * Program/script: Browse to your `EverestStudio.exe`
+     * Start in: The folder containing `EverestStudio.exe`
+6. **Conditions tab:** Uncheck **Start the task only if the computer is on AC power**, then click **OK**.
+
+</details>
+
+<details>
+<summary><b>Run from Source & Build .exe (For Developers)</b></summary>
+
+### Prerequisites
+* Windows 10 / 11 (x64)
+* Python 3.11+
+* OpenRGB placed in `./OpenRGB/OpenRGB.exe` (or installed in `C:\Program Files\OpenRGB` / on `PATH`)
+
+### Run from Source
 ```powershell
 git clone https://github.com/hamza23200/everest-studio-pro.git
 cd everest-studio-pro
 pip install -r requirements.txt
-```
-
-Place the extracted portable `OpenRGB/` folder inside the project root (or install OpenRGB on your system `PATH`), then launch:
-
-```powershell
 python main.py
 ```
 
----
-
-## Architecture Overview
-
-```text
-everest-studio-pro/
-├── engine/
-│   ├── matrix.py           # 147-LED mapping, 81 ordered switches, & Right/Left/Detached coords
-│   ├── effects.py          # 25 procedural, reactive, audio FFT, & screen ambilight shaders
-│   ├── audio_worker.py     # Decoupled Windows WASAPI loopback RFFT thread (15/20 bands)
-│   ├── screen_worker.py    # Decoupled mss multi-monitor capture & EMA color smoother
-│   └── lighting_engine.py  # 35 FPS QThread, Direct Mode USB recovery, & debounced pynput hook
-├── gui/
-│   ├── keyboard_canvas.py  # QPainter 2D 81-key visualizer + 66-diffuser underglow halo
-│   ├── color_picker.py     # Base Camp color deck (SV plane, Hue slider, RGB/HEX, swatches)
-│   └── main_window.py      # Categorized scrollable sidebar, sliders, profiles P1-P5, & tray
-├── assets/                 # Preview imagery
-├── main.py                 # Single-instance lock, portable OpenRGB bootstrap, & Qt entry
-├── requirements.txt        # PySide6, openrgb-python, pynput, numpy, pyaudiowpatch, mss, pyinstaller
-├── EverestStudio.spec      # PyInstaller spec bundling pyaudiowpatch, mss, and numpy DLLs
-└── build_exe.bat           # One-click standalone executable builder
-```
-
----
-
-## Hardware & Driver Specifications
-
-- **Target Hardware:** Mountain Everest 60 (`VID: 0x3282`, `PID: 0x0005`).
-- **LED Topology (147 Total LEDs):**
-  - **81 Mechanical Switches:** `64` main 60% switches + `17` modular numpad switches (dynamically supporting **Right Dock**, **Left Dock**, and **Detached** layouts).
-  - **66 Perimeter Underglow Diffusers:** Independently driven with `Sync with Effect` (0.4 anti-burst dampening), `Static Custom Color`, `Off`, and strict `RGB(0, 0, 0)` clamping at `0%` edge brightness.
-- **SDK Transport:** OpenRGB SDK Server (`127.0.0.1:6742`) in `Direct` mode on a single synchronized thread.
-- **Verified Key Overrides:** `3` (Index `27`), `Spacebar` (Index `112`), `/ ?` (Index `99`), `Right Shift` (Index `98`), `Delete` (Index `100`), `Up Arrow` (Index `101`), `Right Alt` / `AltGr` (Index `113`), plus all 17 numpad virtual keycodes.
-
----
-
-## 25 Lighting Effects
-
-Every effect supports 5 independent preset slots (`[ P1 ]` – `[ P5 ]`) persisted in `config.json`.
-
-### Ambient
-1. **Color Wave** — 2D directional wave (`Right`, `Left`, `Down`, `Up`, `Diagonal`) in Rainbow, Dual, or Single mode.
-2. **Waterfall** — Continuous downward liquid cascade with horizontal shimmer (`Dual Color` or `Multi-Tone Spectrum`).
-3. **Aurora** — Northern Lights rendered with 3 overlapping low-frequency 2D sine waves.
-4. **Breathing & Pulse** — Smooth global breathing using an ocular quadratic curve (`factor ** 1.8`).
-5. **Gradient Breathing** — Dual-color horizontal gradient breathing down to a configurable minimum brightness floor.
-6. **Cosmic Drift** — Slowly drifting deep nebula gradient with twinkling white star particles.
-7. **Thunderstorm** — Stormy midnight-blue base with localized flickering lightning clusters and perimeter-synced thunderclaps.
-8. **System Malfunction** — Cyberpunk dual-color theme with brief randomized horizontal row glitch flickers.
-
-### Dynamic FX
-9. **Tornado** — Aspect-normalized polar spiral centered on the active dock midpoint (`Clockwise` / `Counter-Clockwise`).
-10. **DNA Spiral** — 180°-offset double-helix arms radiating `Outward` or `Inward`.
-11. **Row Sweep** — Serpentine left-to-right glowing head sweeping sequentially down Rows `0..4`.
-12. **Falling Matrix** — Per-column falling rain streams (`Matrix Classic`, `Dual Color`, or `Rainbow`).
-13. **Meteor Shower** — Pool of `4–10` independent angled meteors with bright heads and decaying tails.
-
-### Reactive *(Modifier-Filtered & 80ms Debounced)*
-14. **Snappy Laser** — Row-locked horizontal laser beam firing across only the struck key's row.
-15. **Expanding Ripple** — Concentric circular cosine-bell wavefronts radiating from keystrokes.
-16. **Explosion Burst** — White-hot core flash (`< 80ms`), radial shockwave, and flickering ember sparks.
-17. **Crosshair** — Simultaneous horizontal row and vertical column propagating beams.
-18. **Full-Board Flash** — Unified board-wide envelope pulse that smoothly re-energizes on rapid typing.
-19. **Single-Key Punch** — Instant key-strike flare with linear decay back to base brightness.
-20. **Typing Heatmap** — Per-key thermal gradient (`Blue -> Cyan -> Yellow -> Red -> White`) with **Live Decay**, **Session Persistent**, and **Reset Heatmap** controls.
-
-### System Sync *(Auto-Lifecycle Daemon Threads — 0% Idle CPU When Inactive)*
-21. **Audio Equalizer** — Live Windows WASAPI loopback capture via `pyaudiowpatch` + Hann-windowed NumPy `rfft` binned into `15` (detached) or `20` (docked) logarithmic bands. Includes `Spectrum Bars` and `Bass Pulse` modes, **Sensitivity / Gain**, **Smoothing**, and auto-recovery on audio device switch.
-22. **Screen Ambilight** — Real-time `mss` monitor capture (~22 FPS) downsampled via strided NumPy slicing into a `5x20` key grid and 4 monitor-edge perimeter strips, with **Full Screen Grid** / **Monitor Edges Only**, **Monitor** selector, **Temporal Smoothing**, and **Saturation Boost**.
-
-### Static & Custom
-23. **Static Color** — Clean uniform color with independent edge diffuser control.
-24. **Custom Per-Key** — Interactive paint/erase brush directly on the 2D visualizer (`Fill All` / `Clear All`).
-25. **Lighting Off** — Instant blackout across all switches and underglow LEDs.
-
----
-
-## Troubleshooting & Cold-Boot Sync
-
-- **Conflicts with Mountain Base Camp:** Base Camp and OpenRGB cannot share the Everest 60 HID endpoint (`VID 0x3282`, `PID 0x0005`). Fully quit Base Camp and disable its startup entry before running Everest Studio Pro.
-- **Cold-Boot Hardware Sleep & `[ 🔄 SYNC ]` Button:** If Windows leaves the Everest 60 asleep after a cold boot or sleep cycle, click **`🔄 SYNC`** in the top-right header. It kills `OpenRGB.exe`, performs a virtual USB interface restart (`pnputil /restart-device` on `USB\VID_3282&PID_0005&MI_*`), respawns OpenRGB cleanly, re-asserts Direct Mode, and pushes a full 147-LED frame.
-  - Because `pnputil` requires administrator privileges, running as a standard user prompts UAC once when clicking **`🔄 SYNC`**.
-  - For completely hands-free cold boots with zero UAC prompts, launch `EverestStudio.exe` at logon via a **Windows Task Scheduler** task configured with **"Run with highest privileges"**.
-- **OpenRGB Not Found / Offline Mode:** Ensure `OpenRGB.exe` resides in `<app_dir>\OpenRGB\OpenRGB.exe` (or `<app_dir>\OpenRGB.exe` or `PATH`). While disconnected, the 2D on-screen visualizer continues animating at 35 FPS and the status badge accurately shows `OFFLINE / SIMULATOR`.
-
----
-
-## Building Standalone `.exe`
-
-Run the included build script from the repository root:
-
+### Build Standalone `.exe`
 ```powershell
 .\build_exe.bat
 ```
+This runs `pyinstaller EverestStudio.spec --noconfirm --clean` (bundling `PySide6`, `openrgb-python`, `pynput`, `numpy`, `pyaudiowpatch`, and `mss`) and outputs `dist\EverestStudio.exe`.
 
-Or invoke PyInstaller directly with the tracked `.spec` file (required so `pyaudiowpatch`, `mss`, and `numpy` DLLs are bundled):
+</details>
 
-```powershell
-pyinstaller EverestStudio.spec --noconfirm --clean
+<details>
+<summary><b>Architecture & Hardware Specifications</b></summary>
+
+* **Target Hardware:** Mountain Everest 60 (`VID: 0x3282`, `PID: 0x0005`)
+* **Total Addressable LEDs:** 147 (`64` main switches + `17` modular numpad switches + `66` perimeter underglow diffusers)
+* **SDK Transport:** Local OpenRGB SDK Server (`127.0.0.1:6742`), Direct Mode, single-packet `kb.show(fast=True)` buffer flushes at 35 FPS
+* **System-Sync Workers:** Decoupled daemon threads (`pyaudiowpatch` WASAPI loopback FFT and `mss` + NumPy screen capture) that start only when active and release resources immediately when switched off
+* **USB Recovery (`🔄 SYNC`):** Terminates stale `OpenRGB.exe` handles, restarts present `USB\VID_3282&PID_0005&MI_*` interfaces via `pnputil`, respawns OpenRGB silently, asserts Direct Mode once, and flushes a full 147-LED frame
+
+```text
+everest-studio-pro/
+├── assets/
+│   └── everest_v3_preview.png   # README hero screenshot
+├── engine/
+│   ├── audio_worker.py          # Windows WASAPI loopback FFT capture
+│   ├── effects.py               # 25 procedural, reactive & sync effect renderers
+│   ├── lighting_engine.py       # 35 FPS render loop, OpenRGB SDK & USB reset
+│   ├── matrix.py                # 147-LED hardware map & dynamic numpad coordinates
+│   └── screen_worker.py         # Multi-monitor Ambilight capture & EMA smoothing
+├── gui/
+│   ├── color_widgets.py         # Custom 2D SV picker, Hue bar & preset palette
+│   ├── keyboard_canvas.py       # Real-time 81-key + perimeter QPainter visualizer
+│   └── main_window.py           # Categorized sidebar, dual brightness & config I/O
+├── EverestStudio.spec           # PyInstaller build specification
+├── build_exe.bat                # One-click standalone .exe builder
+├── main.py                      # Entry point, single-instance lock & tray daemon
+└── requirements.txt             # Python dependencies
 ```
 
-The standalone executable is generated at `dist\EverestStudio.exe`.
+</details>
+
+---
+
+## License
+
+Licensed under the [GNU General Public License v3.0](LICENSE).
